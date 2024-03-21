@@ -15,5 +15,5 @@ sensitivity and specificity).
 | Concavity        | Severity of concave portions of the contour                  | Continuous|
 | Symmetry         | Symmetry of the cell nucleus                                  | Continuous|
 | Fractal Dimension| Measure of the "coastline approximation" (coastline - 1)     | Continuous|
-"# STA5069Z-Final-" 
+
 "# STA5069Z-Final-" 
