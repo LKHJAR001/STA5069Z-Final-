@@ -9,7 +9,7 @@ Load packages and Prostate Tumor Dataset found in https://www.kaggle.com/dataset
 #Prostate Cancer
 library(sparsepca)
 library(princurve)
-library(robpca)
+library(rospca)
 library(stargazer)
 library(MASS)
 library(glmnet)
