@@ -1,0 +1,2301 @@
+---
+title: "STA5069Z R Code"
+output: html_document
+date: "2024-02-28"
+---
+
+Load packages and Prostate Tumor Dataset found in https://www.kaggle.com/datasets/sajidsaifi/prostate-cancer
+```{r}
+#Prostate Cancer
+library(sparsepca)
+library(princurve)
+library(robpca)
+library(stargazer)
+library(MASS)
+library(glmnet)
+library(ggcorrplot)
+library(kernlab)
+library(dplyr)
+library(plotly)
+library(cluster)
+library(e1071)
+library(caret)
+library(mclust)
+library(princurve)
+
+data <- read.csv("Prostate_Cancer.csv")
+data$diagnosis_result<- ifelse(data$diagnosis_result =='M', 1, ifelse(data$diagnosis_result == 'B', 0, ''))
+
+x_index <- c('radius', 'texture','perimeter', 'area', 'smoothness', 'compactness', 'symmetry', 'fractal_dimension')
+y_index <- c('diagnosis_result')
+positive <- '1'
+
+```
+
+Train Prognosis model on entire feature space (all 8 features) using SVM-RBF Kernel using 55/45 train-test split with 1000 trials to produce an accuracy, sensitivity and specificity.
+```{r, echo=FALSE}
+split <- 55/100
+sims <- 1000
+suppressWarnings({
+acc_mat_og<- matrix(, nrow = sims, ncol = 1)
+sens_mat_og<- matrix(, nrow = sims, ncol = 1)
+spec_mat_og<- matrix(, nrow = sims, ncol = 1)
+for (i in 1:sims){
+  set.seed(i)
+  train_indices <- sample(1:nrow(data), split * nrow(data))
+  training_set <- data[train_indices, ]
+  test_set <- data[-train_indices, ]  
+  train_x <- scale(training_set[, x_index])
+  train_y <- training_set[, y_index]
+  test_x <- scale(test_set[, x_index])
+  test_y <- test_set[, y_index]
+  tobuild <- data.frame(train_y, train_x)
+  classifier = svm(formula = train_y ~ .,
+                 data = tobuild,
+                 type = 'C-classification',
+                 kernel = 'radial')
+  y_pred <- predict(classifier, newdata = test_x)
+  cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive='1')
+  acc_mat_og[i, 1] <- cm$overall[1]
+  sens_mat_og[i, 1]<- cm$byClass[1]
+  spec_mat_og[i, 1]<- cm$byClass[2]
+}
+})
+mean(acc_mat_og)
+mean(sens_mat_og)
+mean(spec_mat_og)
+
+
+```
+
+
+Robust PCA
+Train Prognosis model using robust PCs using all 3 classification algos using 55/45 train-test split with 1000 trials to produce an accuracy, sensitivity and specificity. Included plots and tables.
+```{r, echo = FALSE}
+suppressMessages({
+split <- 55/100
+sims<- 1000
+max_num_pcs <- 8
+rob_list <- seq(0.5, 1, 0.05)
+acc_mat_rpc_svm <- matrix(, nrow = length(rob_list), ncol = max_num_pcs)
+sens_mat_rpc_svm <- matrix(, nrow =  length(rob_list), ncol = max_num_pcs)
+spec_mat_rpc_svm <- matrix(, nrow =  length(rob_list), ncol = max_num_pcs)
+acc_mat_rpc_logi<- matrix(, nrow =  length(rob_list), ncol = max_num_pcs)
+sens_mat_rpc_logi<- matrix(, nrow =  length(rob_list), ncol = max_num_pcs)
+spec_mat_rpc_logi <- matrix(, nrow =  length(rob_list), ncol = max_num_pcs)
+acc_mat_rpc_naive <- matrix(, nrow =  length(rob_list), ncol = max_num_pcs)
+sens_mat_rpc_naive<- matrix(, nrow =  length(rob_list), ncol = max_num_pcs)
+spec_mat_rpc_naive<- matrix(, nrow =  length(rob_list), ncol = max_num_pcs)
+j <- 1
+for (rob in rob_list){
+  acc_mat_rpc_svm_rob <- matrix(, nrow = sims, ncol = max_num_pcs)
+  sens_mat_rpc_svm_rob <- matrix(, nrow = sims, ncol = max_num_pcs)
+  spec_mat_rpc_svm_rob <- matrix(, nrow = sims, ncol = max_num_pcs)
+  acc_mat_rpc_logi_rob <- matrix(, nrow = sims, ncol = max_num_pcs)
+  sens_mat_rpc_logi_rob <- matrix(, nrow = sims, ncol = max_num_pcs)
+  spec_mat_rpc_logi_rob <- matrix(, nrow = sims, ncol = max_num_pcs)
+  acc_mat_rpc_naive_rob <- matrix(, nrow = sims, ncol = max_num_pcs)
+  sens_mat_rpc_naive_rob<- matrix(, nrow = sims, ncol = max_num_pcs)
+  spec_mat_rpc_naive_rob<- matrix(, nrow = sims, ncol = max_num_pcs)
+  for (num_pca in 1: max_num_pcs){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]  
+      train_x <- scale(training_set[, x_index])
+      train_y <- training_set[,y_index]
+      test_x <- scale(test_set[, x_index])
+      test_y <- test_set[,y_index]
+      
+      rpca <-  robpca(train_x,  k=num_pca, alpha = rob)
+      rpca2 <-  robpca(test_x,  k=num_pca, alpha = rob)
+      #SVM
+      rpca_tobuild <- data.frame(rpca$scores, train_y)
+      classifier = svm(formula = train_y ~ .,
+                         data = rpca_tobuild,
+                         type = 'C-classification',
+                         kernel = 'radial')
+      rpca_totest <- rpca2$scores
+      y_pred <- predict(classifier, newdata = rpca_totest)
+      cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+      acc_mat_rpc_svm_rob[i, num_pca] <- cm$overall[1]
+      sens_mat_rpc_svm_rob[i, num_pca]<- cm$byClass[1]
+      spec_mat_rpc_svm_rob[i, num_pca]<- cm$byClass[2]
+  
+      #Logi
+      rpca_tobuild <- data.frame(PC= rpca$scores, train_y = as.factor(train_y)  )
+      model <- glm( train_y ~., data = rpca_tobuild, family = binomial)
+      rpca_totest <- data.frame(PC = rpca2$scores)
+      y_pred <- predict(model, newdata= rpca_totest, type = 'response')
+      y_pred <- ifelse(y_pred > 0.5, 1, 0)
+      cm <- confusionMatrix(data=factor(y_pred), reference = as.factor(as.integer(test_y ==1)), positive=positive)
+      acc_mat_rpc_logi_rob[i, num_pca] <- cm$overall[1]
+      sens_mat_rpc_logi_rob[i, num_pca]<- cm$byClass[1]
+      spec_mat_rpc_logi_rob[i, num_pca]<- cm$byClass[2]
+  
+      #Naive
+      rpca_tobuild <- data.frame( PC = rpca$scores, train_y = train_y)
+      model <- naiveBayes( train_y ~., data = rpca_tobuild)
+      rpca_totest <- data.frame(PC = rpca2$scores)
+      y_pred <- predict(model, newdata= rpca_totest)
+      cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+      acc_mat_rpc_naive_rob[i, num_pca] <- cm$overall[1]
+      sens_mat_rpc_naive_rob[i, num_pca]<- cm$byClass[1]
+      spec_mat_rpc_naive_rob[i, num_pca]<- cm$byClass[2]
+    }
+  }
+  acc_mat_rpc_svm [j, ] <- colMeans(acc_mat_rpc_svm_rob)
+  acc_mat_rpc_logi[j, ] <- colMeans(acc_mat_rpc_logi_rob)
+  acc_mat_rpc_naive [j, ] <- colMeans(acc_mat_rpc_naive_rob)
+  sens_mat_rpc_svm [j, ] <- colMeans(sens_mat_rpc_svm_rob)
+  sens_mat_rpc_logi[j, ] <- colMeans(sens_mat_rpc_logi_rob)
+  sens_mat_rpc_naive [j, ] <- colMeans(sens_mat_rpc_naive_rob)
+  spec_mat_rpc_svm [j, ] <- colMeans(spec_mat_rpc_svm_rob)
+  spec_mat_rpc_logi[j, ] <- colMeans(spec_mat_rpc_logi_rob)
+  spec_mat_rpc_naive [j, ] <- colMeans(spec_mat_rpc_naive_rob)
+  j<-j+1
+}
+})
+
+#Plots
+#Accuracy
+cex <- 2.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(acc_mat_pc_svm), colMeans(acc_mat_pc_svm), col = '#0020C2',  xlim=c(1, 8), ylim = c(0.55, 0.77), xlab = 'Number of PCs', ylab = 'Accuracy', type = 'n')
+points(colMeans(acc_mat_pc_svm),col = '#0020C2', pch=15, cex = cex)
+points(colMeans(acc_mat_pc_logi),col = '#0020C2', pch=16, cex = cex)
+points(colMeans(acc_mat_pc_naive),col = '#0020C2', pch=17, cex = cex)
+# points(colMeans(acc_mat_rpc_svm),col = '#1589FF', pch=15, cex = cex)
+# points(colMeans(acc_mat_rpc_logi),col = '#1589FF', pch=16, cex = cex)
+# points(colMeans(acc_mat_rpc_naive),col = '#1589FF', pch=17, cex = cex)
+points(acc_mat_rpc_svm[11, ],col = '#1589FF', pch=15, cex = cex)
+points(acc_mat_rpc_logi[11, ],col = '#1589FF', pch=16, cex = cex)
+points(acc_mat_rpc_naive[11, ],col = '#1589FF', pch=17, cex = cex)
+legend("topright", legend = c("PCA SVM", "PCA Logistic", "PCA Naive Bayes", "RPCA SVM", "RPCA Logistic", "RPCA Naive Bayes"), col = c("#0020C2", "#0020C2", "#0020C2", "#1589FF",  "#1589FF",  "#1589FF"), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+
+#Sensitivity
+cex <- 2.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(sens_mat_pc_svm), colMeans(sens_mat_pc_svm), col = '#306754',  xlim=c(1, 8), ylim = c(0.65, 0.89), xlab = 'Number of PCs', ylab = 'Sensitivity', type = 'n')
+points(colMeans(sens_mat_pc_svm),col = '#306754', pch=15, cex = cex)
+points(colMeans(sens_mat_pc_logi),col = '#306754', pch=16, cex = cex)
+points(colMeans(sens_mat_pc_naive),col = '#306754', pch=17, cex = cex)
+# points(colMeans(sens_mat_rpc_svm),col = '#808000', pch=15, cex = cex)
+# points(colMeans(sens_mat_rpc_logi),col = '#808000', pch=16, cex = cex)
+# points(colMeans(sens_mat_rpc_naive),col = '#808000', pch=17, cex = cex)
+points(sens_mat_rpc_svm[5, ],col = '#808000', pch=15, cex = cex)
+points(sens_mat_rpc_logi[5, ],col = '#808000', pch=16, cex = cex)
+points(sens_mat_rpc_naive[5, ],col = '#808000', pch=17, cex = cex)
+legend("topright", legend = c("PCA SVM", "PCA Logistic", "PCA Naive Bayes", "RPCA SVM", "RPCA Logistic", "RPCA Naive Bayes"), col = c("#306754", "#306754", "#306754", "#808000",  "#808000",  "#808000"), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+
+
+#Specificity
+cex <- 2.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(spec_mat_pc_svm), colMeans(spec_mat_pc_svm), col = '#7E3517',  xlim=c(1, 8), ylim = c(0.35, 0.7), xlab = 'Number of PCs', ylab = 'Specificity', type = 'n')
+points(colMeans(spec_mat_pc_svm),col = '#7E3517', pch=15, cex = cex)
+points(colMeans(spec_mat_pc_logi),col = '#7E3517', pch=16, cex = cex)
+points(colMeans(spec_mat_pc_naive),col = '#7E3517', pch=17, cex = cex)
+# points(colMeans(spec_mat_rpc_svm),col = '#EB5406', pch=15, cex = cex)
+# points(colMeans(spec_mat_rpc_logi),col = '#EB5406', pch=16, cex = cex)
+# points(colMeans(spec_mat_rpc_naive),col = '#EB5406', pch=17, cex = cex)
+points(spec_mat_rpc_svm[5, ],col = '#EB5406', pch=15, cex = cex)
+points(spec_mat_rpc_logi[5, ],col = '#EB5406', pch=16, cex = cex)
+points(spec_mat_rpc_naive[5, ],col = '#EB5406', pch=17, cex = cex)
+legend("topright", legend = c("PCA SVM", "PCA Logistic", "PCA Naive Bayes", "RPCA SVM", "RPCA Logistic", "RPCA Naive Bayes"), col = c("#7E3517", "#7E3517", "#7E3517", "#EB5406",  "#EB5406",  "#EB5406"), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+
+
+
+
+#Tables
+acc <- cbind('PCA' = c(rbind( colMeans(acc_mat_pc_svm),
+colMeans(acc_mat_pc_logi),
+colMeans(acc_mat_pc_naive) )), 'RPCA75' = c(rbind( acc_mat_rpc_svm[6, ],
+acc_mat_rpc_logi[6, ],
+acc_mat_rpc_naive [6, ])), 'RPCA1' = c(rbind( acc_mat_rpc_svm[11, ],
+acc_mat_rpc_logi[11, ],
+acc_mat_rpc_naive [11, ]))       )
+
+sens <- cbind('PCA' = c(rbind( colMeans(sens_mat_pc_svm),
+colMeans(sens_mat_pc_logi),
+colMeans(sens_mat_pc_naive) )), 'RPCA75' = c(rbind( sens_mat_rpc_svm[6, ],
+sens_mat_rpc_logi[6, ],
+sens_mat_rpc_naive [6, ])), 'RPCA1' = c(rbind( sens_mat_rpc_svm[11, ],
+sens_mat_rpc_logi[11, ],
+sens_mat_rpc_naive [11, ]))       )
+
+spec <- cbind('PCA' = c(rbind( colMeans(spec_mat_pc_svm),
+colMeans(spec_mat_pc_logi),
+colMeans(spec_mat_pc_naive) )), 'RPCA75' = c(rbind( spec_mat_rpc_svm[6, ],
+spec_mat_rpc_logi[6, ],
+spec_mat_rpc_naive [6, ])), 'RPCA1' = c(rbind( spec_mat_rpc_svm[11, ],
+spec_mat_rpc_logi[11, ],
+spec_mat_rpc_naive [11, ]))       )
+
+tabdat<- data.frame('Number of PCs' = rep(1:8, each = 3),'Classification Method' = rep(c('SVM', 'Logistic','Naive'), 8), acc, sens, spec  )
+
+library(stargazer)
+knitr::kable(tabdat)
+stargazer(tabdat, summary = F, rownames = F)
+
+
+```
+
+
+Sparse PCA
+Train Prognosis model using sparse PCs using all 3 classification algos using 55/45 train-test split with 1000 trials to produce an accuracy, sensitivity and specificity. Included plots and tables.
+```{r, echo=F}
+suppressMessages({
+split <- 55/100
+sims<- 1000
+max_num_pcs <- 8
+acc_mat_spc_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_spc_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_spc_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+acc_mat_spc_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_spc_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_spc_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+acc_mat_spc_naive <- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_spc_naive<- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_spc_naive<- matrix(, nrow = sims, ncol = max_num_pcs)
+eig_spca <- matrix(, nrow = sims, ncol= max_num_pcs)
+for (num_pca in 1: max_num_pcs){
+  for (i in 1:sims){
+    set.seed(i)
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]  
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[,y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[,y_index]
+    
+    #PCA
+    spca<- spca(train_x, verbose = F)
+    eig_spca[i, num_pca] <- (cumsum(spca$eigenvalues)/sum(spca$eigenvalues))[num_pca]
+    spca2<- spca(test_x, verbose = F)
+    #SVM
+    spca_tobuild <- data.frame( spca$scores[, 1:num_pca], train_y  )
+    classifier = svm(formula = train_y ~ .,
+                       data = spca_tobuild,
+                       type = 'C-classification',
+                       kernel = 'radial')
+    spca_totest <- spca2$scores[, 1:num_pca]
+    y_pred <- predict(classifier, newdata = spca_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_spc_svm[i, num_pca] <- cm$overall[1]
+    sens_mat_spc_svm[i, num_pca]<- cm$byClass[1]
+    spec_mat_spc_svm[i, num_pca]<- cm$byClass[2]
+
+    #Logi
+    spca_tobuild <- data.frame(PC= spca$scores[, 1:num_pca], train_y = as.factor(train_y)  )
+    model <- glm( train_y ~., data = spca_tobuild, family = binomial)
+    spca_totest <- data.frame(PC = spca2$scores[, 1:num_pca])
+    y_pred <- predict(model, newdata= spca_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data=factor(y_pred), reference = as.factor(as.integer(test_y ==1)), positive=positive)
+    acc_mat_spc_logi[i, num_pca] <- cm$overall[1]
+    sens_mat_spc_logi[i, num_pca]<- cm$byClass[1]
+    spec_mat_spc_logi[i, num_pca]<- cm$byClass[2]
+
+    #Naive
+    spca_tobuild <- data.frame( PC = spca$scores[, 1:num_pca], train_y = train_y)
+    model <- naiveBayes( train_y ~., data = spca_tobuild)
+    spca_totest <- data.frame(PC = spca2$scores[, 1:num_pca])
+    y_pred <- predict(model, newdata= spca_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+    acc_mat_spc_naive[i, num_pca] <- cm$overall[1]
+    sens_mat_spc_naive[i, num_pca]<- cm$byClass[1]
+    spec_mat_spc_naive[i, num_pca]<- cm$byClass[2]
+  }
+}
+})
+
+#Plots
+#Accuracy
+cex <- 2.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(acc_mat_pc_svm), colMeans(acc_mat_pc_svm), col = '#0020C2',  xlim=c(1, 8), ylim = c(0.5, 0.77), xlab = 'Number of PCs', ylab = 'Accuracy', type = 'n')
+points(colMeans(acc_mat_pc_svm),col = '#0020C2', pch=15, cex = cex)
+points(colMeans(acc_mat_pc_logi),col = '#0020C2', pch=16, cex = cex)
+points(colMeans(acc_mat_pc_naive),col = '#0020C2', pch=17, cex = cex)
+points(colMeans(acc_mat_spc_svm),col = '#1589FF', pch=15, cex = cex)
+points(colMeans(acc_mat_spc_logi),col = '#1589FF', pch=16, cex = cex)
+points(colMeans(acc_mat_spc_naive),col = '#1589FF', pch=17, cex = cex)
+legend("topright", legend = c("PCA SVM", "PCA Logistic", "PCA Naive Bayes", "SPCA SVM", "SPCA Logistic", "SPCA Naive Bayes"), col = c("#0020C2", "#0020C2", "#0020C2", "#1589FF",  "#1589FF",  "#1589FF"), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+
+#Sensitivity
+cex <- 2.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(sens_mat_pc_svm), colMeans(sens_mat_pc_svm), col = '#306754',  xlim=c(1, 8), ylim = c(0.62, 0.91), xlab = 'Number of PCs', ylab = 'Sensitivity', type = 'n')
+points(colMeans(sens_mat_pc_svm),col = '#306754', pch=15, cex = cex)
+points(colMeans(sens_mat_pc_logi),col = '#306754', pch=16, cex = cex)
+points(colMeans(sens_mat_pc_naive),col = '#306754', pch=17, cex = cex)
+points(colMeans(sens_mat_spc_svm),col = '#808000', pch=15, cex = cex)
+points(colMeans(sens_mat_spc_logi),col = '#808000', pch=16, cex = cex)
+points(colMeans(sens_mat_spc_naive),col = '#808000', pch=17, cex = cex)
+legend("topright", legend = c("PCA SVM", "PCA Logistic", "PCA Naive Bayes", "SPCA SVM", "SPCA Logistic", "SPCA Naive Bayes"), col = c("#306754", "#306754", "#306754", "#808000",  "#808000",  "#808000"), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+
+
+#Specificity
+cex <- 2.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(spec_mat_pc_svm), colMeans(spec_mat_pc_svm), col = '#7E3517',  xlim=c(1, 8), ylim = c(0.34, 0.7), xlab = 'Number of PCs', ylab = 'Specificity', type = 'n')
+points(colMeans(spec_mat_pc_svm),col = '#7E3517', pch=15, cex = cex)
+points(colMeans(spec_mat_pc_logi),col = '#7E3517', pch=16, cex = cex)
+points(colMeans(spec_mat_pc_naive),col = '#7E3517', pch=17, cex = cex)
+points(colMeans(spec_mat_spc_svm),col = '#EB5406', pch=15, cex = cex)
+points(colMeans(spec_mat_spc_logi),col = '#EB5406', pch=16, cex = cex)
+points(colMeans(spec_mat_spc_naive),col = '#EB5406', pch=17, cex = cex)
+legend("topright", legend = c("PCA SVM", "PCA Logistic", "PCA Naive Bayes", "SPCA SVM", "SPCA Logistic", "SPCA Naive Bayes"), col = c("#7E3517", "#7E3517", "#7E3517", "#EB5406",  "#EB5406",  "#EB5406"), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+
+
+#Tables
+#Accuracy
+acc <- cbind('PCA' = c(rbind( colMeans(acc_mat_pc_svm),
+colMeans(acc_mat_pc_logi),
+colMeans(acc_mat_pc_naive) )), 'SPCA' = c(rbind( colMeans(acc_mat_spc_svm),
+colMeans(acc_mat_spc_logi),
+colMeans(acc_mat_spc_naive) )))
+sens<- cbind('PCA' = c(rbind( colMeans(sens_mat_pc_svm),
+colMeans(sens_mat_pc_logi),
+colMeans(sens_mat_pc_naive) )), 'SPCA' = c(rbind( colMeans(sens_mat_spc_svm),
+colMeans(sens_mat_spc_logi),
+colMeans(sens_mat_spc_naive) )))
+spec <- cbind('PCA' = c(rbind( colMeans(spec_mat_pc_svm),
+colMeans(spec_mat_pc_logi),
+colMeans(spec_mat_pc_naive) )), 'SPCA' = c(rbind( colMeans(spec_mat_spc_svm),
+colMeans(spec_mat_spc_logi),
+colMeans(spec_mat_spc_naive) )))
+
+tabdat<- data.frame('Number of PCs' = rep(1:8, each = 3),'Classification Method' = rep(c('SVM', 'Logistic','Naive'), 8), acc, sens, spec  )
+
+library(stargazer)
+knitr::kable(tabdat)
+stargazer(tabdat, summary = F, rownames = F)
+
+```
+
+Hybrid: K-Means + 1st PC
+```{r, echo = FALSE}
+suppressMessages({
+split <- 55/100 
+sims <- 1000
+max_num_pcs<-44
+acc_mat_pck_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_pck_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_pck_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+acc_mat_pck_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_pck_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_pck_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+acc_mat_pck_naive<- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_pck_naive <- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_pck_naive <- matrix(, nrow = sims, ncol = max_num_pcs)
+for (num_pca in 1:max_num_pcs){
+  for (i in 1:sims){
+    set.seed(i)
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]  
+    train_x <- data.frame(id =  training_set$id, scale(training_set[, x_index]))
+    train_y <- training_set[,y_index]
+    test_x <- data.frame(id = test_set$id, scale(test_set[, x_index]) )
+    test_y <- test_set[,y_index]
+    
+    tobuild <- data.frame(id = train_x$id)
+    cluster <- kmeans(train_x[, 2:9], num_pca)$cluster
+    for (k in 1:num_pca){
+      tobuild[cluster ==k, 'pc'] <-    prcomp(train_x[cluster ==k, ])$x[, 1]
+    }
+    tobuild <- data.frame(tobuild, train_y = as.factor(train_y))
+
+
+    totest <- data.frame(id = test_x$id)
+    cluster <- kmeans(test_x[, 2:9], num_pca)$cluster
+    for (k in 1:num_pca){
+      totest[cluster ==k, 'pc'] <- prcomp(test_x[cluster ==k, ])$x[, 1]
+    }
+    
+    #SVM
+    classifier = svm(formula = train_y ~ ., 
+                     data = tobuild, 
+                     type = 'C-classification', 
+                     kernel = 'radial') 
+    y_pred <- predict(classifier, newdata = totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+    cm
+    acc_mat_pck_svm[i, num_pca] <- cm$overall[1]
+    sens_mat_pck_svm[i, num_pca]<- cm$byClass[1]
+    spec_mat_pck_svm[i, num_pca]<- cm$byClass[2]
+    
+    #Logi
+    model <- glm( train_y ~., data = tobuild, family = binomial)
+    y_pred <- predict(model, newdata= totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data=as.factor(y_pred), reference = as.factor(as.integer(test_y ==1)), positive='1')
+    acc_mat_pck_logi[i, num_pca] <- cm$overall[1]
+    sens_mat_pck_logi[i, num_pca]<- cm$byClass[1]
+    spec_mat_pck_logi[i, num_pca]<- cm$byClass[2]
+    
+    #Naive
+    model <- naiveBayes( train_y ~., data = tobuild)
+    y_pred <- predict(model, newdata= totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+    acc_mat_pck_naive[i, num_pca] <- cm$overall[1]
+    sens_mat_pck_naive[i, num_pca]<- cm$byClass[1]
+    spec_mat_pck_naive[i, num_pca]<- cm$byClass[2]
+  }
+}
+})
+
+
+
+```
+
+Hybrid: K-Means + Principle Curves
+```{r, echo = FALSE}
+suppressMessages({
+split <- 55/100 
+sims <- 100
+max_num_prin <-6
+acc_mat_prink_svm <- matrix(, nrow = sims, ncol = max_num_prin)
+sens_mat_prink_svm <- matrix(, nrow = sims, ncol = max_num_prin)
+spec_mat_prink_svm <- matrix(, nrow = sims, ncol = max_num_prin)
+acc_mat_prink_logi <- matrix(, nrow = sims, ncol = max_num_prin)
+sens_mat_prink_logi <- matrix(, nrow = sims, ncol = max_num_prin)
+spec_mat_prink_logi <- matrix(, nrow = sims, ncol = max_num_prin)
+acc_mat_prink_naive<- matrix(, nrow = sims, ncol = max_num_prin)
+sens_mat_prink_naive <- matrix(, nrow = sims, ncol = max_num_prin)
+spec_mat_prink_naive <- matrix(, nrow = sims, ncol = max_num_prin)
+for (num_prin in 1:max_num_prin){
+  for (i in 1:sims){
+    set.seed(i)
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]  
+    train_x <- data.frame(id =  training_set$id, scale(training_set[, x_index]))
+    # train_x <- data.frame(id = training_set$X, scale(training_set[, x_index]))
+    train_y <- training_set[,y_index]
+    test_x <- data.frame(id = test_set$id, scale(test_set[, x_index]) )
+    # test_x <- data.frame(id = test_set$X, scale(test_set[, x_index]) )
+    test_y <- test_set[,y_index]
+    
+    tobuild <- data.frame(id = train_x$id)
+    cluster <- kmeans(train_x[, x_index], num_prin)$cluster
+    if ( sum(table(cluster) < 4) !=0 ){
+      next
+    }
+    for (k in unique(cluster)){
+      tobuild[cluster ==k, 'prin'] <-     principal_curve( as.matrix(train_x[cluster ==k, ]) )$lambda
+    }
+    tobuild <- data.frame(tobuild, train_y = as.factor(train_y))
+
+
+    totest <- data.frame(id = test_x$id)
+    cluster <- kmeans(test_x[, x_index], num_prin)$cluster
+    if ( sum(table(cluster) < 4) !=0 ){
+      next
+    }
+    for (k in 1:num_prin){
+      totest[cluster ==k, 'prin'] <- principal_curve( as.matrix(test_x[cluster==k, ]) )$lambda
+    }
+    
+    #SVM
+    classifier = svm(formula = train_y ~ ., 
+                     data = tobuild, 
+                     type = 'C-classification', 
+                     kernel = 'radial') 
+    y_pred <- predict(classifier, newdata = totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_prink_svm[i, num_prin] <- cm$overall[1]
+    sens_mat_prink_svm[i, num_prin]<- cm$byClass[1]
+    spec_mat_prink_svm[i, num_prin]<- cm$byClass[2]
+    
+    #Logi
+    model <- glm( train_y ~., data = tobuild, family = binomial)
+    y_pred <- predict(model, newdata= totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data=as.factor(y_pred), reference = as.factor(as.integer(test_y ==1)), positive='1')
+    acc_mat_prink_logi[i, num_prin] <- cm$overall[1]
+    sens_mat_prink_logi[i, num_prin]<- cm$byClass[1]
+    spec_mat_prink_logi[i, num_prin]<- cm$byClass[2]
+    
+    #Naive
+    model <- naiveBayes( train_y ~., data = tobuild)
+    y_pred <- predict(model, newdata= totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+    acc_mat_prink_naive[i, num_prin] <- cm$overall[1]
+    sens_mat_prink_naive[i, num_prin]<- cm$byClass[1]
+    spec_mat_prink_naive[i, num_prin]<- cm$byClass[2]
+  }
+}
+})
+
+
+#Accuracy
+cex = 3
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(acc_mat_prink_svm), colMeans(acc_mat_prink_svm, na.rm = T), col = '#151B54', ylim = c(0.47, 0.78), xlab = 'Number of Principal Curves', ylab = 'Accuracy', type = 'n', xaxt = "n")
+points(1:ncol(acc_mat_prink_svm), colMeans(acc_mat_prink_svm, na.rm = T),col = '#151B54', pch=15, cex = cex)
+points(1:ncol(acc_mat_prink_logi), colMeans(acc_mat_prink_logi, na.rm = T),col = '#0020C2', pch=16, cex = cex)
+points(1:ncol(acc_mat_prink_naive), colMeans(acc_mat_prink_naive, na.rm = T),col = '#1589FF', pch=17, cex = cex)
+points(colMeans(acc_mat_pc_svm),col = 'black', pch=15, cex = cex)
+points(colMeans(acc_mat_pc_logi),col = 'black', pch=16, cex = cex)
+points(colMeans(acc_mat_pc_naive),col = 'black', pch=17, cex = cex)
+legend("bottomright", legend = c( "Princurve SVM", "Princurve Logistic", "Princurve Naive Bayes", 'PCA'), col = c( '#151B54', '#0020C2', '#1589FF', 'black'), pch = c(15, 16, 17, 15), cex = 1.3, pt.cex = 2 )
+
+#Sensitivity
+cex = 2.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(sens_mat_prink_svm), colMeans(sens_mat_prink_svm, na.rm = T), col = '#504A4B', ylim = c(0.76, 0.89), xlab = 'Number of Principal Curves', ylab = 'Sensitivity', type = 'n', xaxt = "n")
+points(1:ncol(sens_mat_prink_svm), colMeans(sens_mat_prink_svm, na.rm = T),col = '#504A4B', pch=15, cex = cex)
+points(1:ncol(sens_mat_prink_logi), colMeans(sens_mat_prink_logi, na.rm = T),col = '#797979', pch=16, cex = cex)
+points(1:ncol(sens_mat_prink_naive), colMeans(sens_mat_prink_naive, na.rm = T),col = '#A8A9AD', pch=17, cex = cex)
+points(colMeans(sens_mat_pc_svm),col = 'black', pch=15, cex = cex)
+points(colMeans(sens_mat_pc_logi),col = 'black', pch=16, cex = cex)
+points(colMeans(sens_mat_pc_naive),col = 'black', pch=17, cex = cex)
+legend("topright", legend = c( "Princurve SVM", "Princurve Logistic", "Princurve Naive Bayes", 'PCA'), col = c( '#504A4B', '#797979', '#A8A9AD', 'black'), pch = c(15, 16, 17, 15), cex = 1.3, pt.cex = 2 )
+
+#Specificity
+cex = 2.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(spec_mat_prink_svm), colMeans(spec_mat_prink_svm, na.rm = T), col = '#7E3517', ylim = c(0.25,  0.7), xlab = 'Number of Principal Curves', ylab = 'Specificity', type = 'n', xaxt = "n")
+points(1:ncol(spec_mat_prink_svm), colMeans(spec_mat_prink_svm, na.rm = T),col = '#7E3517', pch=15, cex = cex)
+points(1:ncol(spec_mat_prink_logi), colMeans(spec_mat_prink_logi, na.rm = T),col = '#B83C08', pch=16, cex = cex)
+points(1:ncol(spec_mat_prink_naive), colMeans(spec_mat_prink_naive, na.rm = T),col = '#EB5406', pch=17, cex = cex)
+points(colMeans(spec_mat_pc_svm),col = 'black', pch=15, cex = cex)
+points(colMeans(spec_mat_pc_logi),col = 'black', pch=16, cex = cex)
+points(colMeans(spec_mat_pc_naive),col = 'black', pch=17, cex = cex)
+legend("topright", legend = c( "Princurve SVM", "Princurve Logistic", "Princurve Naive Bayes", 'PCA'), col = c( '#7E3517', '#B83C08', '#EB5406', 'black'), pch = c(15, 16, 17, 15), cex = 1.3, pt.cex = 2 )
+
+
+```
+
+
+
+Principle Curves
+```{r, echo = FALSE}
+suppressWarnings({
+sims<- 250
+split_list<-seq(0.1, 0.9, by = 0.01)
+acc_mat_prin_svm<- matrix(, nrow = sims, ncol = length(split_list))
+sens_mat_prin_svm<- matrix(, nrow = sims, ncol = length(split_list))
+spec_mat_prin_svm<- matrix(, nrow = sims, ncol = length(split_list))
+acc_mat_prin_logi<- matrix(, nrow = sims, ncol = length(split_list))
+sens_mat_prin_logi<- matrix(, nrow = sims, ncol = length(split_list))
+spec_mat_prin_logi<- matrix(, nrow = sims, ncol = length(split_list))
+acc_mat_prin_naive<- matrix(, nrow = sims, ncol = length(split_list))
+sens_mat_prin_naive<- matrix(, nrow = sims, ncol = length(split_list))
+spec_mat_prin_naive<- matrix(, nrow = sims, ncol = length(split_list))
+
+acc_mat_1pc_svm <- matrix(, nrow = sims, ncol = length(split_list))
+sens_mat_1pc_svm <- matrix(, nrow = sims, ncol = length(split_list))
+spec_mat_1pc_svm <- matrix(, nrow = sims, ncol = length(split_list))
+acc_mat_1pc_logi <- matrix(, nrow = sims, ncol = length(split_list))
+sens_mat_1pc_logi <- matrix(, nrow = sims, ncol = length(split_list))
+spec_mat_1pc_logi<- matrix(, nrow = sims, ncol = length(split_list))
+acc_mat_1pc_naive <- matrix(, nrow = sims, ncol = length(split_list))
+sens_mat_1pc_naive<- matrix(, nrow = sims, ncol = length(split_list))
+spec_mat_1pc_naive<- matrix(, nrow = sims, ncol = length(split_list))
+j = 1
+for (split in split_list){
+  for (i in 1:sims){
+    set.seed(i)
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]  
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[,y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[,y_index]
+    
+    #Principle Curves
+    fit<- principal_curve(train_x)
+    fit2<- principal_curve(test_x)
+    #SVM
+    fit_tobuild <- data.frame(fit$lambda, train_y)
+    classifier = svm(formula = train_y ~ ., 
+                     data = fit_tobuild, 
+                     type = 'C-classification', 
+                     kernel = 'radial') 
+    fit_totest <- data.frame(fit.lambda = fit2$lambda)
+    y_pred <- predict(classifier, newdata = fit_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_prin_svm[i, j] <- cm$overall[1]
+    sens_mat_prin_svm[i, j]<- cm$byClass[1]
+    spec_mat_prin_svm[i, j]<- cm$byClass[2]
+    #Logi
+    fit_tobuild <- data.frame(fit$lambda, train_y = as.factor(train_y))
+    model <- glm( train_y ~., data = fit_tobuild, family = binomial)
+    fit_totest <- data.frame(fit.lambda = fit2$lambda)
+    y_pred <- predict(model, newdata= fit_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data=as.factor(y_pred), reference = as.factor(as.integer(test_y ==1)), positive='1')
+    acc_mat_prin_logi[i, j] <- cm$overall[1]
+    sens_mat_prin_logi[i, j]<- cm$byClass[1]
+    spec_mat_prin_logi[i, j]<- cm$byClass[2]
+    #Naive
+    fit_tobuild <- data.frame( fit$lambda, train_y)
+    model <- naiveBayes( train_y ~., data = fit_tobuild)
+    fit_totest <- data.frame(fit.lambda = fit2$lambda)
+    y_pred <- predict(model, newdata= fit_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+    acc_mat_prin_naive[i, j] <- cm$overall[1]
+    sens_mat_prin_naive[i, j]<- cm$byClass[1]
+    spec_mat_prin_naive[i, j]<- cm$byClass[2]
+    
+    #PC
+    pca<- princomp(train_x)
+    pca2<- princomp(test_x)
+    num_pca<- 1
+    #SVM
+    pca_tobuild <- data.frame( pca$scores[, 1:num_pca], train_y  )
+    classifier = svm(formula = train_y ~ .,
+                       data = pca_tobuild,
+                       type = 'C-classification',
+                       kernel = 'radial')
+    pca_totest <- pca2$scores[, 1:num_pca]
+    y_pred <- predict(classifier, newdata = pca_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_1pc_svm[i, j] <- cm$overall[1]
+    sens_mat_1pc_svm[i, j]<- cm$byClass[1]
+    spec_mat_1pc_svm[i, j]<- cm$byClass[2]
+    #Logi
+    pca_tobuild <- data.frame(PC= pca$scores[, 1:num_pca], train_y = as.factor(train_y)  )
+    model <- glm( train_y ~., data = pca_tobuild, family = binomial)
+    pca_totest <- data.frame(PC = pca2$scores[, 1:num_pca])
+    y_pred <- predict(model, newdata= pca_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data=factor(y_pred), reference = as.factor(as.integer(test_y ==1)), positive='1')
+    acc_mat_1pc_logi[i, j] <- cm$overall[1]
+    sens_mat_1pc_logi[i, j]<- cm$byClass[1]
+    spec_mat_1pc_logi[i, j]<- cm$byClass[2]
+    #Naive
+    pca_tobuild <- data.frame( PC = pca$scores[, 1:num_pca], train_y = train_y)
+    model <- naiveBayes( train_y ~., data = pca_tobuild)
+    pca_totest <- data.frame(PC = pca2$scores[, 1:num_pca])
+    y_pred <- predict(model, newdata= pca_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+    acc_mat_1pc_naive[i, j] <- cm$overall[1]
+    sens_mat_1pc_naive[i, j]<- cm$byClass[1]
+    spec_mat_1pc_naive[i, j]<- cm$byClass[2]
+  }
+  j = j+1
+}
+})
+
+#Accuracy
+cex = 2
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(acc_mat_prin_svm), colMeans(acc_mat_prin_svm), col = '#1589FF', ylim = c(0.55, 0.8), xlab = 'Proportion Used to Train', ylab = 'Accuracy', type = 'n', xaxt = "n")
+points(1:ncol(acc_mat_prin_svm), colMeans(acc_mat_prin_svm),col = '#1589FF', pch=15, cex = cex)
+points(1:ncol(acc_mat_prin_logi), colMeans(acc_mat_prin_logi),col = '#1589FF', pch=16, cex = cex)
+points(1:ncol(acc_mat_prin_naive), colMeans(acc_mat_prin_naive),col = '#1589FF', pch=17, cex = cex)
+points(1:ncol(acc_mat_1pc_svm), colMeans(acc_mat_1pc_svm),col = '#151B54', pch=15, cex = cex)
+points(1:ncol(acc_mat_1pc_logi), colMeans(acc_mat_1pc_logi),col = '#151B54', pch=16, cex = cex)
+points(1:ncol(acc_mat_1pc_naive), colMeans(acc_mat_1pc_naive),col = '#151B54', pch=17, cex = cex)
+legend("topright", legend = c("First PC SVM", "First PC Logistic", "First PC Naive Bayes","Curve SVM", "Curve Logistic", "Curve Naive Bayes" ), col = c('#151B54', '#151B54', '#151B54',"#1589FF", "#1589FF", "#1589FF"), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+axis(1, at = seq(1, ncol(acc_mat_prin_svm), by = 1), labels = seq(0.1, 0.9, by = 0.01), las = 2)
+
+
+#Sensitivity
+cex <- 1.5
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(sens_mat_prin_svm), colMeans(sens_mat_prin_svm), col = '#808000', ylim = c(0.7, 0.9), xlab = 'Proportion Used to Train', ylab = 'Sensitivity', type = 'n', xaxt = "n")
+points(1:ncol(sens_mat_prin_svm), colMeans(sens_mat_prin_svm),col = '#808000', pch=15, cex=cex)
+points(1:ncol(sens_mat_prin_logi), colMeans(sens_mat_prin_logi),col = '#808000', pch=16, cex=cex)
+points(1:ncol(sens_mat_prin_naive), colMeans(sens_mat_prin_naive),col = '#808000', pch=17, cex=cex)
+points(1:ncol(sens_mat_1pc_svm), colMeans(sens_mat_1pc_svm),col = '#306754', pch=15, cex=cex)
+points(1:ncol(sens_mat_1pc_logi), colMeans(sens_mat_1pc_logi),col = '#306754', pch=16, cex=cex)
+points(1:ncol(sens_mat_1pc_naive), colMeans(sens_mat_1pc_naive),col = '#306754', pch=17, cex=cex)
+legend("topleft", legend = c("First PC SVM", "First PC Logistic", "First PC Naive Bayes","Curve SVM", "Curve Logistic", "Curve Naive Bayes" ), col = c('#306754', '#306754', '#306754',"#808000", "#808000", "#808000" ), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+axis(1, at = seq(1, ncol(acc_mat_prin_svm), by = 1), labels = seq(0.1, 0.9, by = 0.01), las = 2)
+
+
+#Specificity
+cex <- 1.8
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(spec_mat_prin_svm), colMeans(spec_mat_prin_svm), col = '#EB5406', ylim = c(0.18, 0.7), xlab = 'Proportion Used to Train', ylab = 'Specificity', type = 'n',  xaxt = "n")
+points(1:ncol(spec_mat_prin_svm), colMeans(spec_mat_prin_svm),col = '#EB5406', pch=15, cex=cex)
+points(1:ncol(spec_mat_prin_logi), colMeans(spec_mat_prin_logi),col = '#EB5406', pch=16, cex=cex)
+points(1:ncol(spec_mat_prin_naive), colMeans(spec_mat_prin_naive),col = '#EB5406', pch=17, cex=cex)
+points(1:ncol(spec_mat_1pc_svm), colMeans(spec_mat_1pc_svm),col = '#7E3517', pch=15, cex=cex)
+points(1:ncol(spec_mat_1pc_logi), colMeans(spec_mat_1pc_logi),col = '#7E3517', pch=16, cex=cex)
+points(1:ncol(spec_mat_1pc_naive), colMeans(spec_mat_1pc_naive),col = '#7E3517', pch=17, cex=cex)
+legend("topleft", legend = c("First PC SVM", "First PC Logistic", "First PC Naive Bayes","Curve SVM", "Curve Logistic", "Curve Naive Bayes" ), col = c('#7E3517', '#7E3517', '#7E3517',"#EB5406", "#EB5406", "#EB5406" ), pch = c(15, 16, 17, 15, 16, 17), cex = 1.3, pt.cex = 2 )
+axis(1, at = seq(1, ncol(acc_mat_prin_svm), by = 1), labels = seq(0.1, 0.9, by = 0.01), las = 2)
+
+
+```
+
+
+PCA - search for best train/test split.
+Performance metrics vs Number of PCs Used + Train/Test Split, for all 3 classification algorithms. Results were saved to feather file.
+```{r, echo = FALSE}
+# SVM
+suppressWarnings({
+max_num_pcs <-8
+sims <- 100
+split_list<-seq(0.1, 0.9, by = 0.01)
+acc_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+sens_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+spec_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+for (num_pca in 1:max_num_pcs){
+  acc_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  sens_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  spec_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  j = 1
+  for (split in split_list){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]  
+      train_x <- scale(training_set[, x_index])
+      train_y <- training_set[,y_index]
+      test_x <- scale(test_set[, x_index])
+      test_y <- test_set[,y_index]
+      pca<- princomp(train_x)
+      pca_tobuild <- data.frame( pca$scores[, 1:num_pca], train_y  )
+      classifier = svm(formula = train_y ~ ., 
+                     data = pca_tobuild, 
+                     type = 'C-classification', 
+                     kernel = 'radial') 
+      pca<- princomp(test_x)
+      pca_totest <- pca$scores[, 1:num_pca]
+      y_pred <- predict(classifier, newdata = pca_totest)
+      cm <- confusionMatrix(data=y_pred, reference = factor(test_y), positive=positive)
+      acc_mat_pc_splits[i, j] <- cm$overall[1]
+      sens_mat_pc_splits[i, j]<- cm$byClass[1]
+      spec_mat_pc_splits[i, j]<- cm$byClass[2]
+    }
+    j = j+1
+  }
+  acc_mat_pc_splits_perpc[num_pca, ] <- colMeans(acc_mat_pc_splits)
+  sens_mat_pc_splits_perpc[num_pca, ] <- colMeans(sens_mat_pc_splits)
+  spec_mat_pc_splits_perpc[num_pca, ] <- colMeans(spec_mat_pc_splits)
+}
+})
+
+
+plotdat <- data.frame(Accuracy = matrix(acc_mat_pc_splits_perpc, ncol = 1), Sensitivity = matrix(sens_mat_pc_splits_perpc, ncol = 1), Specificity = matrix(spec_mat_pc_splits_perpc, ncol = 1) )
+library('feather')
+feather::write_feather(plotdat, "myfeather_pca_splits_pcs_svm")
+
+
+
+
+#Logistic Regression
+suppressWarnings({
+max_num_pcs <-8
+sims <- 100
+split_list<-seq(0.1, 0.9, by = 0.01)
+acc_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+sens_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+spec_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+for (num_pca in 1:max_num_pcs){
+  acc_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  sens_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  spec_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  j = 1
+  for (split in split_list){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]  
+      train_x <- scale(training_set[, x_index])
+      train_y <- training_set[,y_index]
+      test_x <- scale(test_set[, x_index])
+      test_y <- test_set[,y_index]
+      pca<- princomp(train_x)
+      pca_tobuild <- data.frame( pca$scores[, 1:num_pca], train_y = as.factor(train_y)  )
+      model <- glm( train_y ~., data = pca_tobuild, family = binomial)
+      # model <- glmnet(x= pca$scores[, 1:num_pca], y = as.numeric(train_y), family = binomial, alpha = 0, lambda = NULL)
+      pca<- princomp(test_x)
+      pca_totest <- data.frame(pca$scores[, 1:num_pca])
+      # y_pred <- predict(model, newx= pca$scores[, 1:num_pca], type = 'response', s =0.01)
+      y_pred <- predict(model, newdata= pca_totest, type = 'response')
+      y_pred <- ifelse(y_pred > 0.5, 1, 0)
+      cm <- confusionMatrix(data=factor(y_pred), reference = as.factor(as.integer(test_y ==1)), positive=positive)
+      acc_mat_pc_splits[i, j] <- cm$overall[1]
+      sens_mat_pc_splits[i, j]<- cm$byClass[1]
+      spec_mat_pc_splits[i, j]<- cm$byClass[2]
+    }
+    j = j+1
+  }
+  acc_mat_pc_splits_perpc[num_pca, ] <- colMeans(acc_mat_pc_splits)
+  sens_mat_pc_splits_perpc[num_pca, ] <- colMeans(sens_mat_pc_splits)
+  spec_mat_pc_splits_perpc[num_pca, ] <- colMeans(spec_mat_pc_splits)
+}
+})
+
+plotdat <- data.frame(Accuracy = matrix(acc_mat_pc_splits_perpc, ncol = 1), Sensitivity = matrix(sens_mat_pc_splits_perpc, ncol = 1), Specificity = matrix(spec_mat_pc_splits_perpc, ncol = 1) )
+feather::write_feather(plotdat, "myfeather_pca_splits_pcs_logi")
+
+
+
+
+
+#Naive Bayes
+suppressWarnings({
+max_num_pcs <-8
+sims <- 100
+split_list<-seq(0.1, 0.9, by = 0.01)
+acc_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+sens_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+spec_mat_pc_splits_perpc <- matrix(, nrow = max_num_pcs, ncol = length(split_list)  )
+for (num_pca in 1:max_num_pcs){
+  acc_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  sens_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  spec_mat_pc_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  j = 1
+  for (split in split_list){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]  
+      train_x <- scale(training_set[, x_index])
+      train_y <- training_set[,y_index]
+      test_x <- scale(test_set[, x_index])
+      test_y <- test_set[,y_index]
+      pca<- princomp(train_x)
+      pca_tobuild <- data.frame( pca$scores[, 1:num_pca], train_y = train_y)
+      model <- naiveBayes( train_y ~., data = pca_tobuild)
+      pca<- princomp(test_x)
+      pca_totest <- data.frame(pca$scores[, 1:num_pca])
+      y_pred <- predict(model, newdata= pca_totest)
+      cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+      acc_mat_pc_splits[i, j] <- cm$overall[1]
+      sens_mat_pc_splits[i, j]<- cm$byClass[1]
+      spec_mat_pc_splits[i, j]<- cm$byClass[2]
+    }
+    j = j+1
+  }
+  acc_mat_pc_splits_perpc[num_pca, ] <- colMeans(acc_mat_pc_splits)
+  sens_mat_pc_splits_perpc[num_pca, ] <- colMeans(sens_mat_pc_splits)
+  spec_mat_pc_splits_perpc[num_pca, ] <- colMeans(spec_mat_pc_splits)
+}
+})
+plotdat <- data.frame(Accuracy = matrix(acc_mat_pc_splits_perpc, ncol = 1), Sensitivity = matrix(sens_mat_pc_splits_perpc, ncol = 1), Specificity = matrix(spec_mat_pc_splits_perpc, ncol = 1) )
+feather::write_feather(plotdat, "myfeather_pca_splits_pcs_naive")
+```
+
+
+Kernel PCA with RBF and Polynomial Kernel. Performance metrics vs Number of PCs Used + Sigma/Degree of Polynomial
+```{r, echo = FALSE}
+#RBF-Kernel
+suppressMessages({
+split <- 55/100
+sims<- 100
+sigma_list <- seq(0.05, 1, 0.05)
+max_num_pcs <- 44
+acc_mat_kpca_rbf_svm <- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+sens_mat_kpca_rbf_svm <- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+spec_mat_kpca_rbf_svm <- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+acc_mat_kpca_rbf_logi <- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+sens_mat_kpca_rbf_logi <- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+spec_mat_kpca_rbf_logi<- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+acc_mat_kpca_rbf_naive <- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+sens_mat_kpca_rbf_naive <- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+spec_mat_kpca_rbf_naive <- matrix(, nrow = max_num_pcs, ncol = length(sigma_list))
+for (num_pca in 1:max_num_pcs){
+  acc_mat_kpca_rbf_svm_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  sens_mat_kpca_rbf_svm_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  spec_mat_kpca_rbf_svm_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  acc_mat_kpca_rbf_logi_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  sens_mat_kpca_rbf_logi_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  spec_mat_kpca_rbf_logi_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  acc_mat_kpca_rbf_naive_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  sens_mat_kpca_rbf_naive_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  spec_mat_kpca_rbf_naive_sigma <- matrix(, nrow = sims, ncol = length(sigma_list))
+  j <- 1
+  for (sigma in sigma_list){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]  
+      train_x <- scale(training_set[, x_index])
+      train_y <- training_set[,y_index]
+      test_x <- scale(test_set[, x_index])
+      test_y <- test_set[,y_index]
+      
+      #KPCA 
+      #RBF 
+      kpca<-  kpca(as.matrix(train_x), kernel = "rbfdot",
+               kpar = list(sigma =1/(2*sigma^2)), features = num_pca)
+      kpca2<-  kpca(as.matrix(test_x), kernel = "rbfdot",
+               kpar = list(sigma =1/(2*sigma^2)), features = num_pca)
+      #SVM
+      kpca_tobuild <- data.frame( rotate = rotated(kpca), train_y = train_y)
+      classifier = svm(formula = train_y ~ ., 
+                     data = kpca_tobuild, 
+                     type = 'C-classification', 
+                     kernel = 'radial') 
+      kpca_totest <- data.frame(rotate = rotated(kpca2))
+      y_pred <- predict(classifier, newdata= kpca_totest)
+      cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+      acc_mat_kpca_rbf_svm_sigma[i, j] <- cm$overall[1]
+      sens_mat_kpca_rbf_svm_sigma[i, j]<- cm$byClass[1]
+      spec_mat_kpca_rbf_svm_sigma[i, j]<- cm$byClass[2]
+      
+      #Logi
+      kpca_tobuild <- data.frame( rotate =rotated(kpca), train_y = as.factor(train_y)  )
+      model <- glm( train_y ~., data = kpca_tobuild, family = binomial)
+      kpca_totest <- data.frame(rotate = rotated(kpca2))
+      y_pred <- predict(model, newdata= kpca_totest, type = 'response')
+      y_pred <- ifelse(y_pred > 0.5, 1, 0)
+      cm <- confusionMatrix(data=as.factor(y_pred), reference =as.factor(as.integer(test_y ==1)),  positive = '1')
+      acc_mat_kpca_rbf_logi_sigma[i, j] <- cm$overall[1]
+      sens_mat_kpca_rbf_logi_sigma[i, j]<- cm$byClass[1]
+      spec_mat_kpca_rbf_logi_sigma[i, j]<- cm$byClass[2]
+      
+      #Naive
+      kpca_tobuild <- data.frame( rotate = rotated(kpca), train_y = train_y)
+      model <- naiveBayes( train_y ~., data = kpca_tobuild)
+      kpca_totest <- data.frame(rotate = rotated(kpca2))
+      y_pred <- predict(model, newdata= kpca_totest)
+      cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+      acc_mat_kpca_rbf_naive_sigma[i, j] <- cm$overall[1]
+      sens_mat_kpca_rbf_naive_sigma[i, j]<- cm$byClass[1]
+      spec_mat_kpca_rbf_naive_sigma[i, j]<- cm$byClass[2]
+    }
+    j<-j +1
+  }
+  acc_mat_kpca_rbf_svm[num_pca, ] <- colMeans(acc_mat_kpca_rbf_svm_sigma)
+  sens_mat_kpca_rbf_svm[num_pca, ] <- colMeans(sens_mat_kpca_rbf_svm_sigma)
+  spec_mat_kpca_rbf_svm[num_pca, ] <- colMeans(spec_mat_kpca_rbf_svm_sigma)
+  acc_mat_kpca_rbf_logi[num_pca, ] <- colMeans(acc_mat_kpca_rbf_logi_sigma)
+  sens_mat_kpca_rbf_logi[num_pca, ] <- colMeans(sens_mat_kpca_rbf_logi_sigma)
+  spec_mat_kpca_rbf_logi[num_pca, ] <- colMeans(spec_mat_kpca_rbf_logi_sigma)
+  acc_mat_kpca_rbf_naive[num_pca, ] <- colMeans(acc_mat_kpca_rbf_naive_sigma)
+  sens_mat_kpca_rbf_naive[num_pca, ] <- colMeans(sens_mat_kpca_rbf_naive_sigma)
+  spec_mat_kpca_rbf_naive[num_pca, ] <- colMeans(spec_mat_kpca_rbf_naive_sigma)
+}
+})
+
+
+plotdat <- data.frame(Accuracy = matrix(acc_mat_kpca_rbf_naive, ncol = 1), Sensitivity = matrix(sens_mat_kpca_rbf_naive, ncol = 1), Specificity = matrix(spec_mat_kpca_rbf_naive, ncol = 1) )
+library('feather')
+feather::write_feather(plotdat,"myfeather_kpca_rbf_naive_small")
+
+
+#Polynomial Kernel
+suppressMessages({
+split <- 55/100
+sims<- 100
+deg_list <- seq(2, 10, 1)
+max_num_pcs <- 44
+acc_mat_kpca_poly_svm <- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+sens_mat_kpca_poly_svm <- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+spec_mat_kpca_poly_svm <- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+acc_mat_kpca_poly_logi <- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+sens_mat_kpca_poly_logi <- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+spec_mat_kpca_poly_logi<- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+acc_mat_kpca_poly_naive <- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+sens_mat_kpca_poly_naive <- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+spec_mat_kpca_poly_naive <- matrix(, nrow = max_num_pcs, ncol = length(deg_list))
+for (num_pca in 1:max_num_pcs){
+  acc_mat_kpca_poly_svm_deg <- matrix(, nrow = sims, ncol = length(deg_list))
+  sens_mat_kpca_poly_svm_deg <- matrix(, nrow = sims, ncol = length(deg_list))
+  spec_mat_kpca_poly_svm_deg <- matrix(, nrow = sims, ncol = length(deg_list))
+  acc_mat_kpca_poly_logi_deg <- matrix(, nrow = sims, ncol = length(deg_list))
+  sens_mat_kpca_poly_logi_deg <- matrix(, nrow = sims, ncol = length(deg_list))
+  spec_mat_kpca_poly_logi_deg <- matrix(, nrow = sims, ncol = length(deg_list))
+  acc_mat_kpca_poly_naive_deg <- matrix(, nrow = sims, ncol = length(deg_list))
+  sens_mat_kpca_poly_naive_deg <- matrix(, nrow = sims, ncol = length(deg_list))
+  spec_mat_kpca_poly_naive_deg<- matrix(, nrow = sims, ncol = length(deg_list))
+  j <- 1
+  for (deg in deg_list){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]  
+      train_x <- scale(training_set[, x_index])
+      train_y <- training_set[,y_index]
+      test_x <- scale(test_set[, x_index])
+      test_y <- test_set[,y_index]
+      
+      #KPCA 
+      #Poly 
+      kpca<-  kpca(as.matrix(train_x), kernel = "polydot",
+               kpar = list(degree = deg), features = num_pca)
+      eig(kpca)
+      kpca2<-  kpca(as.matrix(test_x), kernel = "polydot",
+               kpar = list(degree =deg), features = num_pca)
+      #SVM
+      kpca_tobuild <- data.frame( rotate = rotated(kpca), train_y = train_y)
+      classifier = svm(formula = train_y ~ ., 
+                     data = kpca_tobuild, 
+                     type = 'C-classification', 
+                     kernel = 'radial') 
+      kpca_totest <- data.frame(rotate = rotated(kpca2))
+      y_pred <- predict(classifier, newdata= kpca_totest)
+      cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+      acc_mat_kpca_poly_svm_deg[i, j] <- cm$overall[1]
+      sens_mat_kpca_poly_svm_deg[i, j]<- cm$byClass[1]
+      spec_mat_kpca_poly_svm_deg[i, j]<- cm$byClass[2]
+      
+      #Logi
+      kpca_tobuild <- data.frame( rotate =rotated(kpca), train_y = as.factor(train_y)  )
+      model <- glm( train_y ~., data = kpca_tobuild, family = binomial)
+      kpca_totest <- data.frame(rotate = rotated(kpca2))
+      y_pred <- predict(model, newdata= kpca_totest, type = 'response')
+      y_pred <- ifelse(y_pred > 0.5, 1, 0)
+      cm <- confusionMatrix(data=as.factor(y_pred), reference =as.factor(as.integer(test_y ==1)),  positive = '1')
+      acc_mat_kpca_poly_logi_deg[i, j] <- cm$overall[1]
+      sens_mat_kpca_poly_logi_deg[i, j]<- cm$byClass[1]
+      spec_mat_kpca_poly_logi_deg[i, j]<- cm$byClass[2]
+      
+      #Naive
+      kpca_tobuild <- data.frame( rotate = rotated(kpca), train_y = train_y)
+      model <- naiveBayes( train_y ~., data = kpca_tobuild)
+      kpca_totest <- data.frame(rotate = rotated(kpca2))
+      y_pred <- predict(model, newdata= kpca_totest)
+      cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+      acc_mat_kpca_poly_naive_deg[i, j] <- cm$overall[1]
+      sens_mat_kpca_poly_naive_deg[i, j]<- cm$byClass[1]
+      spec_mat_kpca_poly_naive_deg[i, j]<- cm$byClass[2]
+    }
+    j<-j +1
+  }
+  acc_mat_kpca_poly_svm[num_pca, ] <- colMeans(acc_mat_kpca_poly_svm_deg)
+  sens_mat_kpca_poly_svm[num_pca, ] <- colMeans(sens_mat_kpca_poly_svm_deg)
+  spec_mat_kpca_poly_svm[num_pca, ] <- colMeans(spec_mat_kpca_poly_svm_deg)
+  acc_mat_kpca_poly_logi[num_pca, ] <- colMeans(acc_mat_kpca_poly_logi_deg)
+  sens_mat_kpca_poly_logi[num_pca, ] <- colMeans(sens_mat_kpca_poly_logi_deg)
+  spec_mat_kpca_poly_logi[num_pca, ] <- colMeans(spec_mat_kpca_poly_logi_deg)
+  acc_mat_kpca_poly_naive[num_pca, ] <- colMeans(acc_mat_kpca_poly_naive_deg)
+  sens_mat_kpca_poly_naive[num_pca, ] <- colMeans(sens_mat_kpca_poly_naive_deg)
+  spec_mat_kpca_poly_naive[num_pca, ] <- colMeans(spec_mat_kpca_poly_naive_deg)
+}
+})
+
+plotdat <- data.frame(Accuracy = matrix(acc_mat_kpca_poly_naive, ncol = 1), Sensitivity = matrix(sens_mat_kpca_poly_naive, ncol = 1), Specificity = matrix(spec_mat_kpca_poly_naive, ncol = 1) )
+# Save R dataframe as Feather file
+library('feather')
+feather::write_feather(plotdat,"myfeather_kpca_poly_naive")
+```
+
+PCA 
+Performance Measures vs Number of PCs Used
+```{r, echo = FALSE}
+suppressMessages({
+split <- 55/100
+sims<- 1000
+max_num_pcs <- 8
+acc_mat_pc_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_pc_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_pc_svm <- matrix(, nrow = sims, ncol = max_num_pcs)
+acc_mat_pc_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_pc_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_pc_logi <- matrix(, nrow = sims, ncol = max_num_pcs)
+acc_mat_pc_naive <- matrix(, nrow = sims, ncol = max_num_pcs)
+sens_mat_pc_naive<- matrix(, nrow = sims, ncol = max_num_pcs)
+spec_mat_pc_naive<- matrix(, nrow = sims, ncol = max_num_pcs)
+eig_pca <- matrix(, nrow = sims, ncol= max_num_pcs)
+for (num_pca in 1: max_num_pcs){
+  for (i in 1:sims){
+    set.seed(i)
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]  
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[,y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[,y_index]
+    
+    #PCA
+    pca<- princomp(train_x)
+    eig_pca[i, num_pca] <-c(cumsum( pca$sdev^2 ) /sum(pca$sdev^2) )[num_pca]
+    pca2<- princomp(test_x)
+    #SVM
+    pca_tobuild <- data.frame( pca$scores[, 1:num_pca], train_y  )
+    classifier = svm(formula = train_y ~ .,
+                       data = pca_tobuild,
+                       type = 'C-classification',
+                       kernel = 'radial')
+    pca_totest <- pca2$scores[, 1:num_pca]
+    y_pred <- predict(classifier, newdata = pca_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_pc_svm[i, num_pca] <- cm$overall[1]
+    sens_mat_pc_svm[i, num_pca]<- cm$byClass[1]
+    spec_mat_pc_svm[i, num_pca]<- cm$byClass[2]
+
+    #Logi
+    pca_tobuild <- data.frame(PC= pca$scores[, 1:num_pca], train_y = as.factor(train_y)  )
+    model <- glm( train_y ~., data = pca_tobuild, family = binomial)
+    pca_totest <- data.frame(PC = pca2$scores[, 1:num_pca])
+    y_pred <- predict(model, newdata= pca_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data=factor(y_pred), reference = as.factor(as.integer(test_y ==1)), positive=positive)
+    acc_mat_pc_logi[i, num_pca] <- cm$overall[1]
+    sens_mat_pc_logi[i, num_pca]<- cm$byClass[1]
+    spec_mat_pc_logi[i, num_pca]<- cm$byClass[2]
+
+    #Naive
+    pca_tobuild <- data.frame( PC = pca$scores[, 1:num_pca], train_y = train_y)
+    model <- naiveBayes( train_y ~., data = pca_tobuild)
+    pca_totest <- data.frame(PC = pca2$scores[, 1:num_pca])
+    y_pred <- predict(model, newdata= pca_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y),  positive=positive)
+    acc_mat_pc_naive[i, num_pca] <- cm$overall[1]
+    sens_mat_pc_naive[i, num_pca]<- cm$byClass[1]
+    spec_mat_pc_naive[i, num_pca]<- cm$byClass[2]
+  }
+}
+})
+
+
+#Tables
+acc<- cbind("Mean" =  c(rbind( colMeans(acc_mat_pc_svm),
+colMeans(acc_mat_pc_logi),
+colMeans(acc_mat_pc_naive) )),"sd"= c(rbind( apply(acc_mat_pc_svm, 2, sd),
+apply(acc_mat_pc_logi, 2, sd),
+apply(acc_mat_pc_naive, 2, sd))), "2.5th quantile" =  c(rbind( apply(acc_mat_pc_svm, 2, function(X) quantile(X, probs = 0.025)), apply(acc_mat_pc_logi, 2, function(X) quantile(X, probs = 0.025)), apply(acc_mat_pc_naive, 2, function(X) quantile(X, probs = 0.025)) )) , "97.5th qunatile" = c(rbind( apply(acc_mat_pc_svm, 2, function(X) quantile(X, probs = 0.975)), apply(acc_mat_pc_logi, 2, function(X) quantile(X, probs = 0.975)), apply(acc_mat_pc_naive, 2, function(X) quantile(X, probs = 0.975)) )) )
+
+sens<- cbind("Mean" =  c(rbind( colMeans(sens_mat_pc_svm),
+colMeans(sens_mat_pc_logi),
+colMeans(sens_mat_pc_naive) )),"sd"= c(rbind( apply(sens_mat_pc_svm, 2, sd),
+apply(sens_mat_pc_logi, 2, sd),
+apply(sens_mat_pc_naive, 2, sd))), "2.5th quantile" =  c(rbind( apply(sens_mat_pc_svm, 2, function(X) quantile(X, probs = 0.025)), apply(sens_mat_pc_logi, 2, function(X) quantile(X, probs = 0.025)), apply(sens_mat_pc_naive, 2, function(X) quantile(X, probs = 0.025)) )) , "97.5th qunatile" = c(rbind( apply(sens_mat_pc_svm, 2, function(X) quantile(X, probs = 0.975)), apply(sens_mat_pc_logi, 2, function(X) quantile(X, probs = 0.975)), apply(sens_mat_pc_naive, 2, function(X) quantile(X, probs = 0.975)) )) )
+
+spec<- cbind("Mean" =  c(rbind( colMeans(spec_mat_pc_svm),
+colMeans(spec_mat_pc_logi),
+colMeans(spec_mat_pc_naive) )),"sd"= c(rbind( apply(spec_mat_pc_svm, 2, sd),
+apply(spec_mat_pc_logi, 2, sd),
+apply(spec_mat_pc_naive, 2, sd))), "2.5th quantile" =  c(rbind( apply(spec_mat_pc_svm, 2, function(X) quantile(X, probs = 0.025)), apply(spec_mat_pc_logi, 2, function(X) quantile(X, probs = 0.025)), apply(spec_mat_pc_naive, 2, function(X) quantile(X, probs = 0.025)) )) , "97.5th qunatile" = c(rbind( apply(spec_mat_pc_svm, 2, function(X) quantile(X, probs = 0.975)), apply(spec_mat_pc_logi, 2, function(X) quantile(X, probs = 0.975)), apply(spec_mat_pc_naive, 2, function(X) quantile(X, probs = 0.975)) )) )
+             
+    
+tabdat<- data.frame('Number of PCs' = rep(1:8, each = 3),'Classification' = rep(c('SVM', 'Logistic','Naive'), 8), acc, sens, spec  )
+library(stargazer)
+knitr::kable(tabdat)
+stargazer(tabdat, summary = F, rownames = F)
+
+
+
+#Plots
+
+#Accuracy
+lwd <- 3
+cex = 3
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(acc_mat_pc_svm), colMeans(acc_mat_pc_svm), col = '#151B54',  xlim=c(1, 8), ylim =c(0.672, 0.765), xlab = 'Number of PCs', ylab = 'Accuracy', type = 'n')
+points(colMeans(acc_mat_pc_svm),col = '#151B54', pch=15, cex = cex)
+points(colMeans(acc_mat_pc_logi),col = '#0020C2', pch=16, cex = cex)
+points(colMeans(acc_mat_pc_naive),col = '#1589FF', pch=17, cex = cex)
+legend("topright", legend = c("SVM", "Logistic", "Naive Bayes"), col = c("#151B54", "#0020C2", "#1589FF"), pch = c(15, 16, 17), cex = 1.5, pt.cex =2 )
+
+#Sensitivity
+cex = 3
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(sens_mat_pc_svm), colMeans(sens_mat_pc_svm), col = '#504A4B',  xlim=c(1, 8), ylim =c(0.72, 0.89), xlab = 'Number of PCs', ylab = 'Sensitivity', type = 'n')
+points(colMeans(sens_mat_pc_svm),col = '#504A4B', pch=15, cex = cex)
+points(colMeans(sens_mat_pc_logi),col = '#797979', pch=16, cex = cex)
+points(colMeans(sens_mat_pc_naive),col = '#A8A9AD', pch=17, cex = cex)
+legend("topright", legend = c("SVM", "Logistic", "Naive Bayes"), col = c("#504A4B", "#797979", "#A8A9AD"), pch = c(15, 16, 17), cex = 1.5, pt.cex = 2 )
+
+#Specificity
+cex = 3
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(spec_mat_pc_svm), colMeans(spec_mat_pc_svm), col = '#7E3517',  xlim=c(1, 8), ylim = c(0.5, 0.68), xlab = 'Number of PCs', ylab = 'Specificity', type = 'n')
+points(colMeans(spec_mat_pc_svm),col = '#7E3517', pch=15, cex = cex)
+points(colMeans(spec_mat_pc_logi),col = '#B83C08', pch=16, cex = cex)
+points(colMeans(spec_mat_pc_naive),col = '#EB5406', pch=17, cex = cex)
+legend("topright", legend = c("SVM", "Logistic", "Naive Bayes"), col = c("#7E3517", "#B83C08", "#EB5406"), pch = c(15, 16, 17), cex = 1.5, pt.cex =2)
+```
+
+Linear PCA compared with Kernel PCA: Tables and Plots
+```{r, echo = FALSE}
+#Accuracy
+acc <- cbind('PCA' = c(rbind( colMeans(acc_mat_pc_svm),
+colMeans(acc_mat_pc_logi),
+colMeans(acc_mat_pc_naive) )), '0.05' =  c(rbind( acc_mat_kpca_rbf_svm[, 1], acc_mat_kpca_rbf_logi[, 1],  acc_mat_kpca_rbf_naive[, 1] )),'0.1'=  c(rbind( acc_mat_kpca_rbf_svm[, 2], acc_mat_kpca_rbf_logi[, 2],  acc_mat_kpca_rbf_naive[, 2] )), '0.15' = c(rbind( acc_mat_kpca_rbf_svm[, 3], acc_mat_kpca_rbf_logi[, 3],  acc_mat_kpca_rbf_naive[, 3] )), '0.5' = c(rbind( acc_mat_kpca_rbf_svm[, 10], acc_mat_kpca_rbf_logi[, 10],  acc_mat_kpca_rbf_naive[, 10] )), '2' = c(rbind( acc_mat_kpca_poly_svm[, 1], acc_mat_kpca_poly_logi[, 1],  acc_mat_kpca_poly_naive[, 1] )), '3'=  c(rbind( acc_mat_kpca_poly_svm[, 2], acc_mat_kpca_poly_logi[, 2],  acc_mat_kpca_poly_naive[, 2] )), '7' = c(rbind( acc_mat_kpca_poly_svm[, 6], acc_mat_kpca_poly_logi[, 6],  acc_mat_kpca_poly_naive[, 6] )) ) [1:24, ]
+
+tabdat<- data.frame('Number of PCs' = rep(1:8, each = 3),'Classification Method' = rep(c('SVM', 'Logistic','Naive'), 8), acc  )
+library(stargazer)
+knitr::kable(tabdat)
+stargazer(tabdat, summary = F, rownames = F)
+
+
+#Sensitivity
+sens <- cbind('PCA' = c(rbind( colMeans(sens_mat_pc_svm),
+colMeans(sens_mat_pc_logi),
+colMeans(sens_mat_pc_naive) )), '0.05' =  c(rbind( sens_mat_kpca_rbf_svm[, 1], sens_mat_kpca_rbf_logi[, 1],  sens_mat_kpca_rbf_naive[, 1] )),'0.1'=  c(rbind( sens_mat_kpca_rbf_svm[, 2], sens_mat_kpca_rbf_logi[, 2],  sens_mat_kpca_rbf_naive[, 2] )), '0.15' = c(rbind( sens_mat_kpca_rbf_svm[, 3], sens_mat_kpca_rbf_logi[, 3],  sens_mat_kpca_rbf_naive[, 3] )), '0.5' = c(rbind( sens_mat_kpca_rbf_svm[, 10], sens_mat_kpca_rbf_logi[, 10],  sens_mat_kpca_rbf_naive[, 10] )), '2' = c(rbind( sens_mat_kpca_poly_svm[, 1], sens_mat_kpca_poly_logi[, 1],  sens_mat_kpca_poly_naive[, 1] )), '3'=  c(rbind( sens_mat_kpca_poly_svm[, 2], sens_mat_kpca_poly_logi[, 2],  sens_mat_kpca_poly_naive[, 2] )), '7' = c(rbind( sens_mat_kpca_poly_svm[, 6], sens_mat_kpca_poly_logi[, 6],  sens_mat_kpca_poly_naive[, 6] )) ) [1:24, ]
+
+tabdat<- data.frame('Number of PCs' = rep(1:8, each = 3),'Classification' = rep(c('SVM', 'Logistic','Naive'), 8), sens  )
+library(stargazer)
+knitr::kable(tabdat)
+stargazer(tabdat, summary = F, rownames = F)
+
+
+#Specificity
+spec <- cbind('PCA' = c(rbind( colMeans(spec_mat_pc_svm),
+colMeans(spec_mat_pc_logi),
+colMeans(spec_mat_pc_naive) )), '0.3' =  c(rbind( spec_mat_kpca_rbf_svm[, 6], spec_mat_kpca_rbf_logi[, 6],  spec_mat_kpca_rbf_naive[, 6] )),'0.5'=  c(rbind( spec_mat_kpca_rbf_svm[, 10], spec_mat_kpca_rbf_logi[, 10],  spec_mat_kpca_rbf_naive[, 10] )), '0.6' = c(rbind( spec_mat_kpca_rbf_svm[, 12], spec_mat_kpca_rbf_logi[, 12],  spec_mat_kpca_rbf_naive[, 12] )), '1' = c(rbind( spec_mat_kpca_rbf_svm[, 20], spec_mat_kpca_rbf_logi[, 20],  spec_mat_kpca_rbf_naive[, 20] )), '2' = c(rbind( spec_mat_kpca_poly_svm[, 1], spec_mat_kpca_poly_logi[, 1],  spec_mat_kpca_poly_naive[, 1] )), '5'=  c(rbind( spec_mat_kpca_poly_svm[, 4], spec_mat_kpca_poly_logi[, 4],  spec_mat_kpca_poly_naive[, 4] )), '10' = c(rbind( spec_mat_kpca_poly_svm[, 9], spec_mat_kpca_poly_logi[, 9],  spec_mat_kpca_poly_naive[, 9] )) ) [1:24, ]
+
+
+tabdat<- data.frame('Number of PCs' = rep(1:8, each = 3),'Classification' = rep(c('SVM', 'Logistic','Naive'), 8), spec  )
+library(stargazer)
+knitr::kable(tabdat)
+stargazer(tabdat, summary = F, rownames = F)
+
+
+# Plots
+# Sensitivity
+cex = 2
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(sens_mat_pc_svm), colMeans(sens_mat_pc_svm), col = '#504A4B',  xlim=c(1, 44), ylim = c(0.82, 1), xlab = 'Number of PCs', ylab = 'Sensitivity', type = 'n')
+points(colMeans(sens_mat_pc_svm),col = '#504A4B', pch=15, cex = cex)
+# points(colMeans(sens_mat_pc_logi),col = '#797979', pch=16, cex = cex)
+# points(colMeans(sens_mat_pc_naive),col = '#A8A9AD', pch=17, cex = cex)
+
+points(sens_mat_kpca_rbf_svm[, 1],col = '#FFBF00', pch=15,cex = cex)
+# points(sens_mat_kpca_rbf_logi[, 1],col = '#FFA62F', pch=16,cex = cex)
+# points(sens_mat_kpca_rbf_naive[, 1],col = '#EE9A4D', pch=17,cex = cex)
+
+points(sens_mat_kpca_poly_svm[, 8],col = '#0020C2', pch=15,cex = cex)
+# points(sens_mat_kpca_poly_logi[, 2],col = '#0020C2', pch=16,cex = cex)
+# points(sens_mat_kpca_poly_naive[, 2],col = '#1589FF', pch=17,cex = cex)
+
+legend("bottomright", legend = c("PCA SVM", "RBF KPCA SVM", "Polynomial KPCA SVM"), col = c("#504A4B",'#FFBF00','#0020C2' ), pch = c(15, 15, 15), cex =1.5, pt.cex = 2)
+
+
+
+# Specificity
+cex = 2
+png('plot.png', width = 1618, height = 1000, units= 'px', res = 100)
+plot(1:ncol(spec_mat_pc_naive), colMeans(spec_mat_pc_naive), col = '#7E3517',  xlim=c(1, 44), ylim = c(0.35, .7), xlab = 'Number of PCs', ylab = 'Specificity', type = 'n')
+# points(colMeans(spec_mat_pc_svm),col = '#7E3517', pch=15, cex = cex)
+# points(colMeans(spec_mat_pc_logi),col = '#B83C08', pch=16, cex = cex)
+points(colMeans(spec_mat_pc_naive),col = '#7E3517', pch=17, cex = cex)
+
+# points(spec_mat_kpca_rbf_svm[, 6],col = '#FFBF00', pch=15,cex = cex)
+# points(spec_mat_kpca_rbf_logi[, 6],col = '#FFA62F', pch=16,cex = cex)
+points(spec_mat_kpca_rbf_naive[, 6],col = '#EE9A4D', pch=17,cex = cex)
+
+# points(spec_mat_kpca_poly_svm[, 1],col = '#0020C2', pch=15,cex = cex)
+# points(spec_mat_kpca_poly_logi[, 1],col = '#0020C2', pch=16,cex = cex)
+points(spec_mat_kpca_poly_naive[, 1],col = '#0020C2', pch=17,cex = cex)
+
+legend("topright", legend = c("PCA Naive", "RBF KPCA Naive", "Polynomial KPCA Naive"), col = c("#7E3517",'#EE9A4D','#0020C2' ), pch = c(17, 17, 17), cex =1.5, pt.cex = 2)
+
+
+
+
+
+
+
+
+
+# Fitting distributions to PCA Repeated Cross Validation Trials
+
+# library(MASS)
+# acc_svm_fit <- matrix(, nrow = 6, ncol = ncol(acc_mat_pc_svm))
+# sens_svm_fit <- matrix(, nrow = 6, ncol = ncol(sens_mat_pc_svm))
+# spec_svm_fit <- matrix(, nrow = 6, ncol = ncol(spec_mat_pc_svm))
+# for (pc in 1:ncol(acc_mat_pc_svm)){
+#   fit <- fitdistr(acc_mat_pc_svm[, pc], densfun = "weibull", start =list(scale=0.75, shape = 9.5))
+#   fit_bench <- fitdistr(acc_mat_pc_svm[, pc], densfun = 'normal')
+#   acc_svm_fit[1, pc] <- fit$estimate[1]
+#   acc_svm_fit[2, pc] <- fit$estimate[2]
+#   acc_svm_fit[3, pc] <- fit$loglik
+#   acc_svm_fit[4, pc] <- fit_bench$estimate[1]
+#   acc_svm_fit[5, pc] <- fit_bench$estimate[2]
+#   acc_svm_fit[6, pc] <- fit_bench$loglik
+#   # # fit <- fitdistr(sens_mat_pc_svm[, pc], densfun = "weibull", start =list(scale=0.75, shape = 9.5))
+#   # sens_svm_fit[1, pc] <- fit$estimate[1]
+#   # sens_svm_fit[2, pc] <- fit$estimate[2]
+#   # sens_svm_fit[3, pc] <- fit$loglik
+#   fit <- fitdistr(spec_mat_pc_svm[, pc][spec_mat_pc_svm[, pc]!=0]
+# , densfun = "weibull", start =list(scale=.75, shape = 9.5))
+#   fit_bench <- fitdistr(spec_mat_pc_svm[, pc][spec_mat_pc_svm[, pc]!=0], densfun = 'normal')
+#   spec_svm_fit[1, pc] <- fit$estimate[1]
+#   spec_svm_fit[2, pc] <- fit$estimate[2]
+#   spec_svm_fit[3, pc] <- fit$loglik
+#   spec_svm_fit[4, pc] <- fit_bench$estimate[1]
+# spec_svm_fit[5, pc] <- fit_bench$estimate[2]
+#   spec_svm_fit[6, pc] <- fit_bench$loglik
+# }
+# sens_svm_fit
+# spec_mat_pc_svm[, 2][spec_mat_pc_svm[, 2]!=0]
+# print ('as')
+# library(MASS)
+#   fit <- fitdistr(acc_mat_pc_svm[, 2], densfun = "weibull", start= list(scale=.95, shape = 10))
+#   fit$estimate
+#   ad.test(acc_mat_pc_svm[, 2], "pweibull", shape = fit$estimate["shape"], scale = fit$estimate["scale"])
+#   
+#   
+#   theoretical_quantiles <- qweibull(ppoints(length(acc_mat_pc_svm[, 2])), shape = fit$estimate["shape"], scale = fit$estimate["scale"])
+# 
+# # Create Q-Q plot
+# qqplot(theoretical_quantiles, sort(acc_mat_pc_svm[, 2]), main = "Q-Q Plot for Weibull Distribution", xlab = "Theoretical Quantiles", ylab = "Sample Quantiles")
+# abline(0, 1, col = "red")
+#   
+#   
+#   
+#   fit$loglik
+#     x <- seq(0, 1, 0.01)
+# 
+#       fit_bench <- fitdistr(acc_mat_pc_svm[, 2], densfun = "normal")
+#     
+#   hist(acc_mat_pc_svm[, 2], freq = F)
+#   curve(dweibull(x, shape = fit$estimate["shape"], scale = fit$estimate["scale"]), add = T)
+#     curve(dnorm(x, mean = fit_bench$estimate["mean"], sd = fit_bench$estimate["sd"]), add = T)
+#   
+#     dnorm(x, mean = fit_bench$estimate["mean"], sd = fit_bench$estimate["sd"])
+#   
+#         dweibull(x, shape = fit$estimate["shape"], scale = fit$estimate["scale"])
+#   spec_svm_fit[1, pc] <- fit$estimate[1]
+#   spec_svm_fit[2, pc] <- fit$estimate[2]
+#   spec_svm_fit[3, pc] <- fit$loglik
+# 
+
+```
+
+
+
+Clustering - determine best train/test split.
+```{r, echo = FALSE}
+# SVM
+suppressWarnings({
+sims <- 100
+split_list<-seq(0.1, 0.9, by = 0.01)
+max_num_clusts <- 50
+acc_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+sens_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+spec_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+for (num_clust in 1:max_num_clusts ){
+  acc_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  sens_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  spec_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  j = 1
+  for (split in split_list){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]
+      train_x <- scale(training_set[, 2:10])
+      train_y <- training_set[, 11]
+      test_x <- scale(test_set[, 2:10])
+      test_y <- test_set[, 11]
+      cluster <- kmeans(train_x, num_clust)
+      cluster_tobuild <- data.frame( 'Cluster' = cluster$cluster, train_y)
+      classifier = svm(formula = train_y ~ .,
+                   data = cluster_tobuild,
+                   type = 'C-classification',
+                   kernel = 'radial')
+      cluster_totest <- kmeans(test_x, num_clust)
+      y_pred <- predict(classifier, newdata = cluster_totest$cluster)
+      cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive='4')
+      acc_mat_k_splits[i, j] <- cm$overall[1]
+      sens_mat_k_splits[i, j]<- cm$byClass[1]
+      spec_mat_k_splits[i, j]<- cm$byClass[2]
+    }
+    j = j+1
+  }
+  acc_mat_k_splits_perclust[num_clust, ] <- colMeans(acc_mat_k_splits)
+  sens_mat_k_splits_perclust[num_clust, ] <- colMeans(sens_mat_k_splits)
+  spec_mat_k_splits_perclust[num_clust, ] <- colMeans(spec_mat_k_splits)
+}
+})
+
+plotdat <- data.frame(Accuracy = matrix(acc_mat_k_splits_perclust, ncol = 1), Sensitivity = matrix(sens_mat_k_splits_perclust, ncol = 1), Specificity = matrix(spec_mat_k_splits_perclust, ncol = 1) )
+# Save R dataframe as Feather file
+library('feather')
+feather::write_feather(plotdat, "myfeather_csks")
+
+
+
+#Logistic Regression
+suppressWarnings({
+sims <- 100
+split_list<-seq(0.1, 0.9, by = 0.01)
+max_num_clusts <- 50
+acc_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+sens_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+spec_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+for (num_clust in 1:max_num_clusts ){
+  acc_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  sens_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  spec_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  j = 1
+  for (split in split_list){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]
+      train_x <- scale(training_set[, x_index])
+      train_y <- training_set[, y_index]
+      test_x <- scale(test_set[, x_index])
+      test_y <- test_set[, y_index]
+      cluster <- kmeans(train_x, num_clust)
+      cluster_tobuild <- data.frame( 'Cluster' = cluster$cluster, train_y = as.factor(train_y))
+      model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+      cluster_totest <- data.frame('Cluster' = kmeans(test_x, num_clust)$cluster)
+      y_pred <- predict(model, newdata= cluster_totest, type = 'response')
+      y_pred <- ifelse(y_pred > 0.5, 1, 0)
+      cm <- confusionMatrix(data=factor(y_pred), reference = as.factor(as.integer(test_y ==4)), positive='1')
+      acc_mat_k_splits[i, j] <- cm$overall[1]
+      sens_mat_k_splits[i, j]<- cm$byClass[1]
+      spec_mat_k_splits[i, j]<- cm$byClass[2]
+    }
+    j = j+1
+  }
+  acc_mat_k_splits_perclust[num_clust, ] <- colMeans(acc_mat_k_splits)
+  sens_mat_k_splits_perclust[num_clust, ] <- colMeans(sens_mat_k_splits)
+  spec_mat_k_splits_perclust[num_clust, ] <- colMeans(spec_mat_k_splits)
+}
+})
+
+plotdat <- data.frame(Accuracy = matrix(acc_mat_k_splits_perclust, ncol = 1), Sensitivity = matrix(sens_mat_k_splits_perclust, ncol = 1), Specificity = matrix(spec_mat_k_splits_perclust, ncol = 1) )
+# Save R dataframe as Feather file
+library('feather')
+feather::write_feather(plotdat, "myfeather_cskl")
+
+
+
+#Naive Bayes
+suppressWarnings({
+sims <- 100
+split_list<-seq(0.1, 0.9, by = 0.01)
+max_num_clusts <- 50
+acc_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+sens_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+spec_mat_k_splits_perclust <- matrix(, nrow = max_num_clusts, ncol = length(split_list)  )
+for (num_clust in 1:max_num_clusts ){
+  acc_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  sens_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  spec_mat_k_splits<- matrix(, nrow = sims, ncol = length(split_list))
+  j = 1
+  for (split in split_list){
+    for (i in 1:sims){
+      set.seed(i)
+      train_indices <- sample(1:nrow(data), split * nrow(data))
+      training_set <- data[train_indices, ]
+      test_set <- data[-train_indices, ]
+      train_x <- scale(training_set[, x_index])
+      train_y <- training_set[, y_index]
+      test_x <- scale(test_set[, x_index])
+      test_y <- test_set[, y_index]
+      cluster <- kmeans(train_x, num_clust)
+      cluster_tobuild <- data.frame( 'Cluster' = cluster$cluster, train_y = train_y)
+      model <- naiveBayes( train_y ~., data = cluster_tobuild)
+      cluster_totest <- data.frame('Cluster' = kmeans(test_x, num_clust)$cluster)
+      y_pred <- predict(model, newdata= cluster_totest)
+      cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+      acc_mat_k_splits[i, j] <- cm$overall[1]
+      sens_mat_k_splits[i, j]<- cm$byClass[1]
+      spec_mat_k_splits[i, j]<- cm$byClass[2]
+    }
+    j = j+1
+  }
+  acc_mat_k_splits_perclust[num_clust, ] <- colMeans(acc_mat_k_splits)
+  sens_mat_k_splits_perclust[num_clust, ] <- colMeans(sens_mat_k_splits)
+  spec_mat_k_splits_perclust[num_clust, ] <- colMeans(spec_mat_k_splits)
+}
+})
+
+plotdat <- data.frame(Accuracy = matrix(acc_mat_k_splits_perclust, ncol = 1), Sensitivity = matrix(sens_mat_k_splits_perclust, ncol = 1), Specificity = matrix(spec_mat_k_splits_perclust, ncol = 1) )
+# Save R dataframe as Feather file
+library('feather')
+feather::write_feather(plotdat, "myfeather_cskn")
+
+```
+
+
+
+
+Clustering Methods
+Using both hierarchical and non-hierarchical techniques, for all 3 classification algorithms.
+```{r, echo = FALSE}
+sims <- 100
+split<- 55/100
+num_clust_max <- floor((1-split)*nrow(data)) # K-means can't take this (others neither since computation time too high-we'll pick)
+num_clust_max<- 50
+
+
+#SVM
+#All except fanny (Only fanny + K-means have restricted num_clust_max, others can extend till n)
+suppressWarnings({
+kmax<- num_clust_max
+acc_mat_k_svm<- matrix(, nrow = sims, ncol = kmax)
+sens_mat_k_svm<- matrix(, nrow = sims, ncol = kmax)
+spec_mat_k_svm<- matrix(, nrow = sims, ncol = kmax)
+acc_mat_a_s_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_s_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_s_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_a_a_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_a_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_a_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_a_c_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_c_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_c_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_d_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_d_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_d_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_p_ns_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_p_ns_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_p_ns_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_p_s_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_p_s_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_p_s_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_m_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_m_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_m_svm<- matrix(, nrow = sims, ncol = num_clust_max)
+for (num_clust in 1:num_clust_max){
+  for (i in 1:sims){
+    set.seed(i)
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[, y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[, y_index]
+    
+    #Kmeans
+    cluster <- kmeans(train_x, num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$cluster, train_y)
+    classifier = svm(formula = train_y ~ .,
+                 data = cluster_tobuild,
+                 type = 'C-classification',
+                 kernel = 'radial')
+    cluster_totest <- kmeans(test_x, num_clust)
+    y_pred <- predict(classifier, newdata = cluster_totest$cluster)
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_k_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_k_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_k_svm[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Single
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'single')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y)
+    classifier = svm(formula = train_y ~ .,
+                     data = cluster_tobuild,
+                     type = 'C-classification',
+                     kernel = 'radial')
+    cluster_totest <- agnes(test_x, metric= "euclidean", stand = F, method = 'single')
+    y_pred <- predict(classifier, newdata = cutree( cluster_totest, k = num_clust ))
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_a_s_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_a_s_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_s_svm[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Average
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'average')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y)
+    classifier = svm(formula = train_y ~ .,
+                     data = cluster_tobuild,
+                     type = 'C-classification',
+                     kernel = 'radial')
+    cluster_totest <- agnes(test_x, metric= "euclidean", stand = F, method = 'average')
+    y_pred <- predict(classifier, newdata = cutree( cluster_totest, k = num_clust ))
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_a_a_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_a_a_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_a_svm[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Complete
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'complete')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y)
+    classifier = svm(formula = train_y ~ .,
+                     data = cluster_tobuild,
+                     type = 'C-classification',
+                     kernel = 'radial')
+    cluster_totest <- agnes(test_x, metric= "euclidean", stand = F, method = 'complete')
+    y_pred <- predict(classifier, newdata = cutree( cluster_totest, k = num_clust ))
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_a_c_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_a_c_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_c_svm[i, num_clust]<- cm$byClass[2]
+    
+    #Diana
+    cluster <- diana(train_x, metric= "euclidean", stand = F)
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y)
+    classifier = svm(formula = train_y ~ .,
+                     data = cluster_tobuild,
+                     type = 'C-classification',
+                     kernel = 'radial')
+    cluster_totest <- diana(test_x, metric= "euclidean", stand = F)
+    y_pred <- predict(classifier, newdata = cutree( cluster_totest, k = num_clust ))
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_d_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_d_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_d_svm[i, num_clust]<- cm$byClass[2]
+    
+    #Pan NS
+    cluster <- pam(train_x, k=num_clust, do.swap = F)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y)
+    classifier = svm(formula = train_y ~ .,
+                     data = cluster_tobuild,
+                     type = 'C-classification',
+                     kernel = 'radial')
+    cluster_totest <- pam(test_x, k=num_clust, do.swap = F)
+    y_pred <- predict(classifier, newdata = cluster_totest$clustering)
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_p_ns_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_p_ns_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_p_ns_svm[i, num_clust]<- cm$byClass[2]
+    
+    #Pan S
+    cluster <- pam(train_x, k=num_clust, do.swap = T)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y)
+    classifier = svm(formula = train_y ~ .,
+                     data = cluster_tobuild,
+                     type = 'C-classification',
+                     kernel = 'radial')
+    cluster_totest <- pam(test_x, k=num_clust, do.swap = T)
+    y_pred <- predict(classifier, newdata = cluster_totest$clustering)
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_p_s_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_p_s_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_p_s_svm[i, num_clust]<- cm$byClass[2]
+    
+    #Model Based
+    cluster <-  Mclust(train_x, G =num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$classification, train_y)
+    classifier = svm(formula = train_y ~ .,
+                     data = cluster_tobuild,
+                     type = 'C-classification',
+                     kernel = 'radial')
+    cluster_totest <- Mclust(test_x, G =num_clust)
+    y_pred <- predict(classifier, newdata = cluster_totest$classification)
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_m_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_m_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_m_svm[i, num_clust]<- cm$byClass[2]
+    
+  }
+}
+})
+
+#Fanny
+suppressWarnings({
+f_max <- num_clust_max
+acc_mat_f_svm<- matrix(, nrow = sims, ncol = f_max)
+sens_mat_f_svm<- matrix(, nrow = sims, ncol = f_max)
+spec_mat_f_svm<- matrix(, nrow = sims, ncol = f_max)
+for (num_clust in 1:f_max){
+  for (i in 1:sims){
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[, y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[, y_index]
+    cluster <- fanny(train_x, k=num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y)
+    classifier = svm(formula = train_y ~ .,
+                     data = cluster_tobuild,
+                     type = 'C-classification',
+                     kernel = 'radial')
+    cluster_totest <- fanny(test_x, k=num_clust)
+    y_pred <- predict(classifier, newdata = cluster_totest$clustering)
+      #   what_it_pred <- data.frame('Cluster' = cluster_totest$cluster, y_pred, test_y)
+      #   what_it_pred<- what_it_pred  |>
+      # mutate(Classification = ifelse( y_pred== 0 & test_y == 0, "TN", ifelse( y_pred== 1 & test_y == 1, "TP", ifelse( y_pred== 0 & test_y == 1, "FN",ifelse( y_pred== 1 & test_y == 0, "FP", '') ))))
+    cm <- confusionMatrix(data= y_pred, reference = factor(test_y), positive=positive)
+    acc_mat_f_svm[i, num_clust] <- cm$overall[1]
+    sens_mat_f_svm[i, num_clust]<- cm$byClass[1]
+    spec_mat_f_svm[i, num_clust]<- cm$byClass[2]
+  }
+}
+})
+
+# Plots
+
+lwd<- 3
+plot(1:ncol(acc_mat_a_s), colMeans(acc_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim = c(0.5, .62), xlab = 'Number of Clusters', ylab = 'Accuracy', type = 'n')
+lines( predict( loess(colMeans(acc_mat_a_s)~ c(1:ncol(acc_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(acc_mat_a_a)~ c(1:ncol(acc_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(acc_mat_a_c)~ c(1:ncol(acc_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(acc_mat_d)~ c(1:ncol(acc_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(acc_mat_k)~ c(1:ncol(acc_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(acc_mat_p_ns)~ c(1:ncol(acc_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(acc_mat_p_s)~ c(1:ncol(acc_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(acc_mat_f)~ c(1:ncol(acc_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(acc_mat_m)~ c(1:ncol(acc_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+legend("bottomright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+#Sens
+lwd<- 3
+plot(1:ncol(sens_mat_a_s), colMeans(sens_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim= c(0.6, 1), xlab = 'Number of Clusters', ylab = 'Sensitivty', type = 'n')
+lines( predict( loess(colMeans(sens_mat_a_s)~ c(1:ncol(sens_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(sens_mat_a_a)~ c(1:ncol(sens_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(sens_mat_a_c)~ c(1:ncol(sens_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(sens_mat_d)~ c(1:ncol(sens_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(sens_mat_k)~ c(1:ncol(sens_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(sens_mat_p_ns)~ c(1:ncol(sens_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(sens_mat_p_s)~ c(1:ncol(sens_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(sens_mat_f)~ c(1:ncol(sens_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(sens_mat_m)~ c(1:ncol(sens_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+
+legend("bottomright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+#Spec
+lwd<- 3
+plot(1:ncol(spec_mat_a_s), colMeans(spec_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim= c(0, 0.4), xlab = 'Number of Clusters', ylab = 'Sensitivty', type = 'n')
+lines( predict( loess(colMeans(spec_mat_a_s)~ c(1:ncol(spec_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(spec_mat_a_a)~ c(1:ncol(spec_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(spec_mat_a_c)~ c(1:ncol(spec_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(spec_mat_d)~ c(1:ncol(spec_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(spec_mat_k)~ c(1:ncol(spec_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(spec_mat_p_ns)~ c(1:ncol(spec_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(spec_mat_p_s)~ c(1:ncol(spec_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(spec_mat_f)~ c(1:ncol(spec_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(spec_mat_m)~ c(1:ncol(spec_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+
+legend("topright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+
+
+
+#Logistic Regression
+#All except fanny (Only fanny + K-means have restricted num_clust_max, others can extend till n)
+suppressWarnings({
+kmax<- num_clust_max
+acc_mat_k_logi<- matrix(, nrow = sims, ncol = kmax)
+sens_mat_k_logi<- matrix(, nrow = sims, ncol = kmax)
+spec_mat_k_logi<- matrix(, nrow = sims, ncol = kmax)
+acc_mat_a_s_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_s_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_s_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_a_a_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_a_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_a_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_a_c_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_c_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_c_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_d_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_d_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_d_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_p_ns_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_p_ns_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_p_ns_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_p_s_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_p_s_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_p_s_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_m_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_m_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_m_logi<- matrix(, nrow = sims, ncol = num_clust_max)
+for (num_clust in 1:num_clust_max){
+  for (i in 1:sims){
+    set.seed(i)
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[, y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[, y_index]
+    
+    #Kmeans
+    cluster <- kmeans(train_x, num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$cluster, train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster_totest <- data.frame('Cluster' = kmeans(test_x, num_clust)$cluster)
+    y_pred <- predict(model, newdata= cluster_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data=factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_k_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_k_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_k_logi[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Single
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'single')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster <- agnes(test_x, metric= "euclidean", stand = F, method = 'single')
+    cluster_totest <- data.frame('Cluster' = cutree( cluster, k = num_clust ))
+    y_pred <- predict(model, newdata = cluster_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data= factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_a_s_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_a_s_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_s_logi[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Average
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'average')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster <- agnes(test_x, metric= "euclidean", stand = F, method = 'average')
+    cluster_totest <- data.frame('Cluster' = cutree( cluster, k = num_clust ))
+    y_pred <- predict(model, newdata = cluster_totest,  type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data= factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_a_a_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_a_a_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_a_logi[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Complete
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'complete')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster <- agnes(test_x, metric= "euclidean", stand = F, method = 'complete')
+    cluster_totest <- data.frame('Cluster' = cutree( cluster, k = num_clust ))
+    y_pred <- predict(model, newdata = cluster_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data= factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_a_c_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_a_c_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_c_logi[i, num_clust]<- cm$byClass[2]
+    
+    #Diana
+    cluster <- diana(train_x, metric= "euclidean", stand = F)
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster <- diana(test_x, metric= "euclidean", stand = F)
+    cluster_totest <- data.frame('Cluster' = cutree( cluster, k = num_clust ))
+    y_pred <- predict(model, newdata = cluster_totest,  type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data= factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_d_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_d_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_d_logi[i, num_clust]<- cm$byClass[2]
+    
+    #Pan NS
+    cluster <- pam(train_x, k=num_clust, do.swap = F)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster <- pam(test_x, k=num_clust, do.swap = F)
+    cluster_totest <- data.frame('Cluster' = cluster$clustering)
+    y_pred <- predict(model, newdata = cluster_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data= factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_p_ns_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_p_ns_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_p_ns_logi[i, num_clust]<- cm$byClass[2]
+    
+    #Pan S
+    cluster <- pam(train_x, k=num_clust, do.swap = T)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster <- pam(test_x, k=num_clust, do.swap = T)
+    cluster_totest <- data.frame('Cluster' = cluster$clustering)
+    y_pred <- predict(model, newdata = cluster_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data= factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_p_s_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_p_s_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_p_s_logi[i, num_clust]<- cm$byClass[2]
+    
+    #Model Based
+    cluster <-  Mclust(train_x, G =num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$classification, train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster <- Mclust(test_x, G =num_clust)
+    cluster_totest <- data.frame( 'Cluster' = cluster$classification)
+    y_pred <- predict(model, newdata = cluster_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data= factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_m_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_m_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_m_logi[i, num_clust]<- cm$byClass[2]
+    
+  }
+}
+})
+
+
+
+#Fanny
+suppressWarnings({
+f_max <- num_clust_max
+acc_mat_f_logi<- matrix(, nrow = sims, ncol = f_max)
+sens_mat_f_logi<- matrix(, nrow = sims, ncol = f_max)
+spec_mat_f_logi<- matrix(, nrow = sims, ncol = f_max)
+for (num_clust in 1:f_max){
+  for (i in 1:sims){
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[, y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[, y_index]
+    cluster <- fanny(train_x, k=num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y = factor(train_y))
+    model <- glm( train_y ~., data = cluster_tobuild, family = binomial)
+    cluster <- fanny(test_x, k=num_clust)
+    cluster_totest<- data.frame('Cluster' = cluster$clustering)
+    y_pred <- predict(model, newdata = cluster_totest, type = 'response')
+    y_pred <- ifelse(y_pred > 0.5, 1, 0)
+    cm <- confusionMatrix(data= factor(y_pred), reference = factor(test_y), positive='1')
+    acc_mat_f_logi[i, num_clust] <- cm$overall[1]
+    sens_mat_f_logi[i, num_clust]<- cm$byClass[1]
+    spec_mat_f_logi[i, num_clust]<- cm$byClass[2]
+  }
+}
+})
+
+
+
+# Plots
+
+lwd<- 3
+plot(1:ncol(acc_mat_a_s), colMeans(acc_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim = c(0.5, .62), xlab = 'Number of Clusters', ylab = 'Accuracy', type = 'n')
+lines( predict( loess(colMeans(acc_mat_a_s)~ c(1:ncol(acc_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(acc_mat_a_a)~ c(1:ncol(acc_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(acc_mat_a_c)~ c(1:ncol(acc_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(acc_mat_d)~ c(1:ncol(acc_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(acc_mat_k)~ c(1:ncol(acc_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(acc_mat_p_ns)~ c(1:ncol(acc_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(acc_mat_p_s)~ c(1:ncol(acc_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(acc_mat_f)~ c(1:ncol(acc_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(acc_mat_m)~ c(1:ncol(acc_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+
+legend("bottomright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+#Sens
+lwd<- 3
+plot(1:ncol(sens_mat_a_s), colMeans(sens_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim= c(0.6, 1), xlab = 'Number of Clusters', ylab = 'Sensitivty', type = 'n')
+lines( predict( loess(colMeans(sens_mat_a_s)~ c(1:ncol(sens_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(sens_mat_a_a)~ c(1:ncol(sens_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(sens_mat_a_c)~ c(1:ncol(sens_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(sens_mat_d)~ c(1:ncol(sens_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(sens_mat_k)~ c(1:ncol(sens_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(sens_mat_p_ns)~ c(1:ncol(sens_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(sens_mat_p_s)~ c(1:ncol(sens_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(sens_mat_f)~ c(1:ncol(sens_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(sens_mat_m)~ c(1:ncol(sens_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+
+legend("bottomright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+#Spec
+lwd<- 3
+plot(1:ncol(spec_mat_a_s), colMeans(spec_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim= c(0, 0.4), xlab = 'Number of Clusters', ylab = 'Sensitivty', type = 'n')
+lines( predict( loess(colMeans(spec_mat_a_s)~ c(1:ncol(spec_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(spec_mat_a_a)~ c(1:ncol(spec_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(spec_mat_a_c)~ c(1:ncol(spec_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(spec_mat_d)~ c(1:ncol(spec_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(spec_mat_k)~ c(1:ncol(spec_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(spec_mat_p_ns)~ c(1:ncol(spec_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(spec_mat_p_s)~ c(1:ncol(spec_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(spec_mat_f)~ c(1:ncol(spec_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(spec_mat_m)~ c(1:ncol(spec_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+
+legend("topright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+
+
+
+
+#Naive Bayes
+#All except fanny (Only fanny + K-means have restricted num_clust_max, others can extend till n)
+suppressWarnings({
+kmax<- num_clust_max
+acc_mat_k_naive<- matrix(, nrow = sims, ncol = kmax)
+sens_mat_k_naive<- matrix(, nrow = sims, ncol = kmax)
+spec_mat_k_naive<- matrix(, nrow = sims, ncol = kmax)
+acc_mat_a_s_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_s_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_s_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_a_a_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_a_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_a_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_a_c_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_a_c_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_a_c_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_d_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_d_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_d_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_p_ns_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_p_ns_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_p_ns_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_p_s_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_p_s_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_p_s_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+acc_mat_m_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+sens_mat_m_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+spec_mat_m_naive<- matrix(, nrow = sims, ncol = num_clust_max)
+for (num_clust in 1:num_clust_max){
+  for (i in 1:sims){
+    set.seed(i)
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[, y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[, y_index]
+    
+    #Kmeans
+    cluster <- kmeans(train_x, num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$cluster, train_y = train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster_totest <- data.frame('Cluster' = kmeans(test_x, num_clust)$cluster)
+    y_pred <- predict(model, newdata= cluster_totest)
+    cm <- confusionMatrix(data=y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_k_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_k_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_k_naive[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Single
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'single')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y =train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster <- agnes(test_x, metric= "euclidean", stand = F, method = 'single')
+    cluster_totest <- data.frame('Cluster' = cutree( cluster, k = num_clust ))
+    y_pred <- predict(model, newdata = cluster_totest)
+    cm <- confusionMatrix(data= y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_a_s_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_a_s_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_s_naive[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Average
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'average')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y = train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster <- agnes(test_x, metric= "euclidean", stand = F, method = 'average')
+    cluster_totest <- data.frame('Cluster' = cutree( cluster, k = num_clust ))
+    y_pred <- predict(model, newdata = cluster_totest)
+    cm <- confusionMatrix(data= y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_a_a_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_a_a_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_a_naive[i, num_clust]<- cm$byClass[2]
+    
+    #Agnes Complete
+    cluster <- agnes(train_x, metric= "euclidean", stand = F, method = 'complete')
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y =train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster <- agnes(test_x, metric= "euclidean", stand = F, method = 'complete')
+    cluster_totest <- data.frame('Cluster' = cutree( cluster, k = num_clust ))
+    y_pred <- predict(model, newdata = cluster_totest)
+    cm <- confusionMatrix(data= y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_a_c_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_a_c_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_a_c_naive[i, num_clust]<- cm$byClass[2]
+    
+    #Diana
+    cluster <- diana(train_x, metric= "euclidean", stand = F)
+    cluster_tobuild <- data.frame( 'Cluster' = cutree( cluster, k = num_clust ), train_y = train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster <- diana(test_x, metric= "euclidean", stand = F)
+    cluster_totest <- data.frame('Cluster' = cutree( cluster, k = num_clust ))
+    y_pred <- predict(model, newdata = cluster_totest)
+    cm <- confusionMatrix(data= y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_d_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_d_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_d_naive[i, num_clust]<- cm$byClass[2]
+    
+    #Pan NS
+    cluster <- pam(train_x, k=num_clust, do.swap = F)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y = train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster <- pam(test_x, k=num_clust, do.swap = F)
+    cluster_totest <- data.frame('Cluster' = cluster$clustering)
+    y_pred <- predict(model, newdata = cluster_totest)
+    cm <- confusionMatrix(data= y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_p_ns_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_p_ns_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_p_ns_naive[i, num_clust]<- cm$byClass[2]
+    
+    #Pan S
+    cluster <- pam(train_x, k=num_clust, do.swap = T)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y = train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster <- pam(test_x, k=num_clust, do.swap = T)
+    cluster_totest <- data.frame('Cluster' = cluster$clustering)
+    y_pred <- predict(model, newdata = cluster_totest)
+    cm <- confusionMatrix(data= y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_p_s_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_p_s_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_p_s_naive[i, num_clust]<- cm$byClass[2]
+    
+    #Model Based
+    cluster <-  Mclust(train_x, G =num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$classification, train_y = train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster <- Mclust(test_x, G =num_clust)
+    cluster_totest <- data.frame( 'Cluster' = cluster$classification)
+    y_pred <- predict(model, newdata = cluster_totest)
+    cm <- confusionMatrix(data= y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_m_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_m_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_m_naive[i, num_clust]<- cm$byClass[2]
+    
+  }
+}
+})
+
+
+
+#Fanny
+suppressWarnings({
+f_max <- num_clust_max
+acc_mat_f_naive<- matrix(, nrow = sims, ncol = f_max)
+sens_mat_f_naive<- matrix(, nrow = sims, ncol = f_max)
+spec_mat_f_naive<- matrix(, nrow = sims, ncol = f_max)
+for (num_clust in 1:f_max){
+  for (i in 1:sims){
+    train_indices <- sample(1:nrow(data), split * nrow(data))
+    training_set <- data[train_indices, ]
+    test_set <- data[-train_indices, ]
+    train_x <- scale(training_set[, x_index])
+    train_y <- training_set[, y_index]
+    test_x <- scale(test_set[, x_index])
+    test_y <- test_set[, y_index]
+    cluster <- fanny(train_x, k=num_clust)
+    cluster_tobuild <- data.frame( 'Cluster' = cluster$clustering, train_y = train_y)
+    model <- naiveBayes( train_y ~., data = cluster_tobuild)
+    cluster <- fanny(test_x, k=num_clust)
+    cluster_totest<- data.frame('Cluster' = cluster$clustering)
+    y_pred <- predict(model, newdata = cluster_totest)
+    cm <- confusionMatrix(data= y_pred, reference = as.factor(test_y), positive=positive)
+    acc_mat_f_naive[i, num_clust] <- cm$overall[1]
+    sens_mat_f_naive[i, num_clust]<- cm$byClass[1]
+    spec_mat_f_naive[i, num_clust]<- cm$byClass[2]
+  }
+}
+})
+
+
+
+# Plots
+
+lwd<- 3
+plot(1:ncol(acc_mat_a_s), colMeans(acc_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim = c(0.5, .62), xlab = 'Number of Clusters', ylab = 'Accuracy', type = 'n')
+lines( predict( loess(colMeans(acc_mat_a_s)~ c(1:ncol(acc_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(acc_mat_a_a)~ c(1:ncol(acc_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(acc_mat_a_c)~ c(1:ncol(acc_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(acc_mat_d)~ c(1:ncol(acc_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(acc_mat_k)~ c(1:ncol(acc_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(acc_mat_p_ns)~ c(1:ncol(acc_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(acc_mat_p_s)~ c(1:ncol(acc_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(acc_mat_f)~ c(1:ncol(acc_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(acc_mat_m)~ c(1:ncol(acc_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+
+legend("bottomright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+#Sens
+lwd<- 3
+plot(1:ncol(sens_mat_a_s), colMeans(sens_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim= c(0.6, 1), xlab = 'Number of Clusters', ylab = 'Sensitivty', type = 'n')
+lines( predict( loess(colMeans(sens_mat_a_s)~ c(1:ncol(sens_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(sens_mat_a_a)~ c(1:ncol(sens_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(sens_mat_a_c)~ c(1:ncol(sens_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(sens_mat_d)~ c(1:ncol(sens_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(sens_mat_k)~ c(1:ncol(sens_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(sens_mat_p_ns)~ c(1:ncol(sens_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(sens_mat_p_s)~ c(1:ncol(sens_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(sens_mat_f)~ c(1:ncol(sens_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(sens_mat_m)~ c(1:ncol(sens_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+
+legend("bottomright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+#Spec
+lwd<- 3
+plot(1:ncol(spec_mat_a_s), colMeans(spec_mat_a_s), col = '#151B54',  xlim=c(1, num_clust), ylim= c(0, 0.4), xlab = 'Number of Clusters', ylab = 'Sensitivty', type = 'n')
+lines( predict( loess(colMeans(spec_mat_a_s)~ c(1:ncol(spec_mat_a_s)) ) ),  col = '#151B54',lwd = lwd )
+# points(1:ncol(acc_mat_a_a), colMeans(acc_mat_a_a), col = '#0020C2', pch = 20)
+lines( predict( loess(colMeans(spec_mat_a_a)~ c(1:ncol(spec_mat_a_a)) ) ),  col = '#0020C2',lwd = lwd)
+# points(1:ncol(acc_mat_a_c), colMeans(acc_mat_a_c), col = '#1589FF', pch = 20)
+lines( predict( loess(colMeans(spec_mat_a_c)~ c(1:ncol(spec_mat_a_c)) ) ),  col = '#1589FF',lwd = lwd)
+# points(1:ncol(acc_mat_d), colMeans(acc_mat_d), col = '#FFA62F', pch = 20)
+lines( predict( loess(colMeans(spec_mat_d)~ c(1:ncol(spec_mat_d)) ) ),  col = '#FFA62F',lwd = lwd)
+
+# points(1:ncol(acc_mat_k), colMeans(acc_mat_k), col = '#FFFF33', pch = 20)
+lines( predict( loess(colMeans(spec_mat_k)~ c(1:ncol(spec_mat_k)) ) ),  col = '#FFFF33',lwd = lwd)
+# points(1:ncol(acc_mat_p_ns), colMeans(acc_mat_p_ns), col = '#556B2F', pch = 20)
+lines( predict( loess(colMeans(spec_mat_p_ns)~ c(1:ncol(spec_mat_p_ns)) ) ),  col = '#556B2F',lwd = lwd)
+# points(1:ncol(acc_mat_p_s), colMeans(acc_mat_p_s), col = '#808000', pch = 20)
+lines( predict( loess(colMeans(spec_mat_p_s)~ c(1:ncol(spec_mat_p_s)) ) ),  col = '#808000',lwd = lwd)
+# points(1:ncol(acc_mat_f), colMeans(acc_mat_f), col = '#00CED1', pch = 20)
+lines( predict( loess(colMeans(spec_mat_f)~ c(1:ncol(spec_mat_f)) ) ),  col = '#00CED1',lwd = lwd)
+# points(1:ncol(acc_mat_m), colMeans(acc_mat_m), col = '#B83C08', pch = 20)
+lines( predict( loess(colMeans(spec_mat_m)~ c(1:ncol(spec_mat_m)) ) ),  col = '#B83C08',lwd = lwd)
+
+
+legend("topright", legend = c("Agnes (Simple)", "Agnes (Average)", "Agnes (Complete)", "Diana", "K-Means", "Pam (No Sqapping)", "Pam (Swapping)", "Fanny", "Model-Based"), col = c("#151B54", "#0020C2", "#1589FF", "#FFA62F", "#FFFF33", "#556B2F", "#808000", "#00CED1", "#B83C08"), pch = 20, cex = .5, pt.cex = 1.5 )
+
+
+
+```
+

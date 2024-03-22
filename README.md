@@ -2,7 +2,8 @@ The study investigates what the best dimension reduction technique is for buildi
 It assesses linear, kernel, sparse and robust principal component analyis as well as principle curves and clustering, 
 using classification algorithms SVM-RBF Kernel, Logistic Regression and Naive Bayes. It was found that solely using 
 the first principal component from linear PCA would result in the best performance metrics (the study assessed accuracy,
-sensitivity and specificity).
+sensitivity and specificity). The data dictionary for the prostate tumor data set found in 
+https://www.kaggle.com/datasets/sajidsaifi/prostate-cancer is below:
 
 | Feature          | Description                                                  | Type      |
 |------------------|--------------------------------------------------------------|-----------|
@@ -16,4 +17,4 @@ sensitivity and specificity).
 | Symmetry         | Symmetry of the cell nucleus                                  | Continuous|
 | Fractal Dimension| Measure of the "coastline approximation" (coastline - 1)     | Continuous|
 
-"# STA5069Z-Final-" 
+
